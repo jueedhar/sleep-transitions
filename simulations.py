@@ -53,7 +53,7 @@ def simulate_transition_times(
         if n_in_b == n_total:
             break
 
-        p = f_transition_dependence(n_in_b)
+        p = f_transition_dependence(n_in_b, n_total)
         if not (0.0 <= p <= 1.0):
             raise ValueError("f_transition_dependence must return a value in [0, 1]")
 
@@ -68,9 +68,10 @@ def simulate_transition_times(
 
 
 def simulate_master_df(
-    f_wake_transition_dependence: Callable[[int], float],
-    f_sleep_transition_dependence: Callable[[int], float],
+    f_wake_transition_dependence: Callable[[int, int], float],
+    f_sleep_transition_dependence: Callable[[int, int], float],
     t_max: int = 5000,
+    n_total: int = 80
 ) -> pd.DataFrame:
     """
     Simulate 5 days of waking and sleeping transitions for 5 clutches and return the
@@ -87,11 +88,12 @@ def simulate_master_df(
     - All other columns are filled with NaN for now
 
     Args:
-        f_wake_transition_dependence (Callable[[int], float]): transition-probability
+        f_wake_transition_dependence (Callable[[int, int], float]): transition-probability
             function for waking
-        f_sleep_transition_dependence (Callable[[int], float]): transition-probability
+        f_sleep_transition_dependence (Callable[[int, int], float]): transition-probability
             function for sleeping
         t_max (int): maximum number of simulation steps for each transition process
+        n_total (int): num of individuals in simulated group
 
     Returns:
         pd.DataFrame: simulated dataframe with columns
@@ -101,7 +103,6 @@ def simulate_master_df(
     start_date = pd.Timestamp("2020-11-28")
     dates = pd.date_range(start_date, periods=30, freq="D")
 
-    n_total = 80
     clutch_sample_sizes = [20, 30, 40, 50, 60]
     wake_offset = 6 * 3600
     sleep_offset = 18 * 3600
@@ -173,9 +174,9 @@ def simulate_master_df(
     )
 
 if __name__ == "__main__":
-    def f_wake(n):
+    def f_wake(n, n_total):
         return 0.005
-    def f_sleep(n):
+    def f_sleep(n, n_total):
         return 0.003
 
     df_sim = simulate_master_df(f_wake, f_sleep)

@@ -79,8 +79,8 @@ def accumulate_to_percentiles(
 
 def unbiased_exp_param_estimate(data: List[float]) -> float:
     """
-    From a given set of durations, returns the de-biased MLE of the exponential
-    distribution that best fits it. Estimator is (n/(n-1)) * (1 / mean(data)).
+    From a given set of durations, returns the de-biased MLE of the geometric
+    distribution that best fits it. Estimator p_hat is 1/x.avg. Bias is p_hat(1-p_hat)/n.
 
     Args:
         data (List[float]): all durations to consider
@@ -101,18 +101,20 @@ def unbiased_exp_param_estimate(data: List[float]) -> float:
         raise ValueError("Mean of data is zero, cannot compute estimate")
 
     n = len(arr)
-    lambda_hat = (n / (n - 1)) * (1.0 / mean_val)
+    p_hat = 1/mean_val
+    bias_hat = p_hat*(1-p_hat)/n
+    debiased_p_hat = p_hat - bias_hat
 
-    return lambda_hat
+    return debiased_p_hat
 
 
 def unbiased_exp_param_sd(data: List[float], n_boot: int = 100) -> float:
     """
-    Estimates the standard deviation (standard error) of the unbiased exponential
+    Estimates the standard deviation (standard error) of the unbiased geometric
     rate parameter estimator using bootstrap resampling.
 
     For each bootstrap replicate, the data are resampled with replacement, the
-    unbiased exponential rate parameter is computed, and the standard deviation
+    unbiased geometric rate parameter is computed, and the standard deviation
     of these estimates is returned.
 
     Args:
@@ -123,7 +125,6 @@ def unbiased_exp_param_sd(data: List[float], n_boot: int = 100) -> float:
         float: bootstrap estimate of the standard deviation of the estimator
     """
     arr = np.asarray(data, dtype=float)
-
     if arr.size < 2:
         raise ValueError("Need at least two data points for bootstrap")
 

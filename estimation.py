@@ -138,3 +138,51 @@ def unbiased_exp_param_sd(data: List[float], n_boot: int = 100) -> float:
         estimates[i] = unbiased_exp_param_estimate(sample)
 
     return estimates.std(ddof=1)
+
+
+def estimate_exp_by_percentile_df(
+    percentile_durations: Dict[float, List[float]],
+    n_boot: int = 100
+) -> pd.DataFrame:
+    """
+    For each percentile window, compute the unbiased exponential rate parameter
+    estimate and its bootstrap standard deviation, and return results as a DataFrame.
+
+    Args:
+        percentile_durations (Dict[float, List[float]]): mapping from percentile
+            window upper bound to the list of durations assigned to that window,
+            typically the output of accumulate_to_percentiles()
+        n_boot (int): number of bootstrap replicates for SD estimation
+
+    Returns:
+        pd.DataFrame with columns:
+            - percentile: percentile window upper bound
+            - estimate: unbiased exponential rate parameter estimate
+            - sd: bootstrap standard deviation of the estimate
+            - n: number of durations in that percentile bin
+    """
+    rows = []
+
+    for perc, durations in percentile_durations.items():
+        n = len(durations)
+
+        if n < 2:
+            estimate = np.nan
+            sd = np.nan
+        else:
+            estimate = unbiased_exp_param_estimate(durations)
+            sd = unbiased_exp_param_sd(durations, n_boot=n_boot)
+
+        rows.append({
+            "percentile": perc,
+            "estimate": estimate,
+            "sd": sd,
+            "n": n,
+        })
+
+    df = pd.DataFrame(rows)
+
+    # Sort by percentile for readability
+    df = df.sort_values("percentile").reset_index(drop=True)
+
+    return df

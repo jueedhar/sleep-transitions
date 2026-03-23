@@ -16,23 +16,38 @@ import utilities
 
 def get_intervals(events: np.ndarray) -> np.ndarray:
     """
-    Given a list containing the time of day (in seconds 0 <= t < 86400), returns the
-    consecutive inter-event durations starting from the first to the last.
+    Given event times within a day (in seconds, 0 <= t < 86400), return the
+    consecutive inter-event intervals after ordering events from earliest to latest.
+
+    If multiple events are simultaneous, they are treated as occurring at the same
+    transition point. The interval from the previous non-simultaneous event is
+    repeated for each simultaneous event.
+
+    Example:
+        [6010, 6023, 6023] -> [13, 13]
+        [10, 20, 20, 35]   -> [10, 10, 15]
 
     Args:
-        events (np.ndarray): time-stamps (in seconds) of all events
+        events (np.ndarray): 1D array of event times.
 
     Returns:
-        np.ndarray: consecutive inter-event intervals
+        np.ndarray: consecutive inter-event intervals between non-simultaneous events.
     """
-    if events.size == 0:
-        return np.array([])
+    events = np.asarray(events)
 
-    # Ensure sorted order
+    if events.size < 2:
+        return np.array([], dtype=events.dtype)
+
     events_sorted = np.sort(events)
+    unique_times, counts = np.unique(events_sorted, return_counts=True)
 
-    # Compute consecutive differences
-    intervals = np.diff(events_sorted)
+    if unique_times.size < 2:
+        return np.array([], dtype=events.dtype)
+
+    diffs = np.diff(unique_times)
+
+    # Repeat each diff according to how many events occur at the later timestamp
+    intervals = np.repeat(diffs, counts[1:])
 
     return intervals
 

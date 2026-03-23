@@ -2,9 +2,10 @@
 
 ## Juee
 
-- [ ] master data sheet (.parquet) 
-- [ ] 
-- [ ] 
+- [x] master data sheet (.parquet) 
+- [ ] wake to sleep vs sleep to wake curves pooled over each individual and all days
+- [ ] the transitions for each separate age-sex class, sleep-site-type
+- [ ] quant difference (how?)
 - [ ] 
 - [ ] 
 - [ ] 

@@ -17,4 +17,4 @@ MASTER_DATA_SHEET = os.path.join(config.DATA, "baboon_sleep_wake_transitions.par
 formats=['png', 'pdf', 'svg']
 
 #Miscellaneous
-SUPPRESS_INFORMATIVE_PRINT = 5
+SUPPRESS_INFORMATIVE_PRINT = False

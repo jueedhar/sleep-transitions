@@ -22,12 +22,12 @@ def f_memoryless(n: int, n_total: int) -> float:
 
 def f_increasing(n: int, n_total: int) -> float:
     """Quadratically increasing transition probability."""
-    return 0.9 * (n / n_total) ** 2
+    return 0.001 + 0.009 * (n / n_total) ** 2
 
 
 def f_saturating(n: int, n_total: int) -> float:
     """Rapidly saturating transition probability."""
-    return 0.9 * (n / n_total) ** 0.2
+    return 0.001 + 0.009 * (n / n_total) ** 0.2
 
 
 def run_transition_recovery_benchmark(
@@ -45,7 +45,7 @@ def run_transition_recovery_benchmark(
     Uses:
         - simulations.simulate_master_df()
         - durations.get_transition_duration_table()
-        - estimation.accumulate_to_percentiles()
+        - estimation.accumulate_percentile_window_durations()
         - estimation.estimate_exp_by_percentile_df()
 
     Assumes the following are defined in config.py:
@@ -79,39 +79,40 @@ def run_transition_recovery_benchmark(
         print(scenario_name)
         for rep in range(n_reps):
             print(f"sim {rep} of {n_reps}")
-            df_sim = simulations.simulate_master_df(
+            df_sim_main = simulations.simulate_master_df(
                 f_wake_transition_dependence=f_transition,
                 f_sleep_transition_dependence=f_transition,
                 t_max=t_max,
                 n_total=n_total_sim,
             )
 
-            for eventtype in ["wake", "sleep"]:
-                durations_list = durations.get_transition_duration_table(
-                    df_sim, eventtype=eventtype
-                )
 
-                percentile_durations = estimation.accumulate_to_percentiles(
-                    durations_list=durations_list,
-                    perc_thresholds=config.PERCENTILE_THRESHOLDS,
-                    min_tags=config.MIN_TAGS,
-                )
+            for clutch_id, df_sim in df_sim_main.groupby("clutch_id"):
+                for eventtype in ["wake", "sleep"]:
+                    df_sim = df_sim[df_sim[f't_{eventtype}'] > 0]
+                    percentile_durations = estimation.accumulate_percentile_window_durations(
+                        df = df_sim,
+                        eventtype = eventtype,
+                        perc_thresholds=config.PERCENTILE_THRESHOLDS,
+                        min_tags=config.MIN_TAGS,
+                    )
 
-                est_df = estimation.estimate_exp_by_percentile_df(
-                    percentile_durations=percentile_durations,
-                    n_boot=n_boot,
-                )
+                    est_df = estimation.estimate_exp_by_percentile_df(
+                        percentile_durations=percentile_durations,
+                        n_boot=n_boot,
+                    )
 
-                est_df["scenario"] = scenario_name
-                est_df["eventtype"] = eventtype
-                est_df["rep"] = rep
-                estimate_frames.append(est_df)
+                    est_df["scenario"] = scenario_name
+                    est_df["eventtype"] = eventtype
+                    est_df["rep"] = rep
+                    est_df["clutch_id"] = clutch_id
+                    estimate_frames.append(est_df)
 
     all_estimates = pd.concat(estimate_frames, ignore_index=True)
 
     summary = (
         all_estimates
-        .groupby(["scenario", "eventtype", "percentile"], as_index=False)
+        .groupby(["scenario", "eventtype", "percentile", "clutch_id"], as_index=False)
         .agg(
             estimate_mean=("estimate", "mean"),
             estimate_sd_across_reps=("estimate", "std"),
@@ -159,27 +160,27 @@ def run_transition_recovery_benchmark(
                 x="x",
                 y="true_prob",
                 ax=ax,
-                label="true function",
                 color="black",
             )
 
-            sns.lineplot(
-                data=est_sub,
-                x="percentile",
-                y="estimate_mean",
-                marker="o",
-                ax=ax,
-                label="estimated λ",
-            )
+            for clutch_id, est_sub_cl in est_sub.groupby("clutch_id"):
+                sns.lineplot(
+                    data=est_sub_cl,
+                    x="percentile",
+                    y="estimate_mean",
+                    label=f"estimate: {clutch_id}",
+                    marker="o",
+                    ax=ax,
+                )
 
-            ax.errorbar(
-                est_sub["percentile"],
-                est_sub["estimate_mean"],
-                yerr=est_sub["bootstrap_sd_mean"],
-                fmt="none",
-                capsize=3,
-                color=sns.color_palette()[0],
-            )
+                ax.errorbar(
+                    est_sub["percentile"],
+                    est_sub["estimate_mean"],
+                    yerr=est_sub["bootstrap_sd_mean"],
+                    fmt="none",
+                    capsize=3,
+                    color=sns.color_palette()[0],
+                )
 
             if i == 0:
                 ax.set_title(eventtype)

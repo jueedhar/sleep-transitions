@@ -11,8 +11,9 @@
 
 ## Pranav
 
-- [ ] functions for getting inter-transition intervals
+- [x] functions for getting inter-transition intervals
 - [ ] de-biased exponential probability estimator implementation
 - [ ] compare across various variables
-- [ ] sims for memoryless, relaxing process, and accumulating process
+- [ ] rewrite for a risk-based hazard estimation
+- [x] sims for memoryless, relaxing process, and accumulating process
 - [ ] code review Juee's code

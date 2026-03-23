@@ -12,34 +12,57 @@ from typing import List, Dict
 import numpy as np
 import pandas as pd
 
-def accumulate_to_percentiles(
-    durations_list: List[np.ndarray],
+def accumulate_percentile_window_durations(
+    df: pd.DataFrame,
+    eventtype: str,
     perc_thresholds: List[float],
-    min_tags: int
+    min_tags: int,
 ) -> Dict[float, List[float]]:
     """
-    Takes list of inter-event durations on each day for each clutch, and then adds each
-    duration into one list for each percentile-to-percentile window. Percentile matching
-    is uniquely done for each day for each clutch.
+    For each date × clutch_id subset, find the ordered transition timestamps for the
+    requested event type ("wake" or "sleep"), then compute the elapsed duration
+    spanned by each percentile-to-percentile window.
+
+    Percentiles are based on event order through time.
+
+    Example:
+        transition times = [21600, 21620, 21670, 21710, 21800]
+        perc_thresholds = [0.2, 0.4, 0.6, 0.8, 1.0]
+
+        n = 5, so cutoff indices are:
+            0.2 -> ceil(0.2 * 5) - 1 = 0
+            0.4 -> ceil(0.4 * 5) - 1 = 1
+            0.6 -> ceil(0.6 * 5) - 1 = 2
+            0.8 -> ceil(0.8 * 5) - 1 = 3
+            1.0 -> ceil(1.0 * 5) - 1 = 4
+
+        corresponding timestamps:
+            [21600, 21620, 21670, 21710, 21800]
+
+        window durations added to the dict:
+            0.2 -> 21600 - 21600 = 0
+            0.4 -> 21620 - 21600 = 20
+            0.6 -> 21670 - 21620 = 50
+            0.8 -> 21710 - 21670 = 40
+            1.0 -> 21800 - 21710 = 90
 
     Args:
-        durations_list (List[np.ndarray]): output from
-            durations.get_transition_duration_table()
-        perc_thresholds (List[float]): upper bounds of percentile windows.
-            E.g., [0.1, 0.5, 0.7, 0.9, 1.0]
-        min_tags (int): minimum number of points in an array in durations_list to
-            consider it for analysis
+        df (pd.DataFrame): master data frame
+        eventtype (str): "wake" or "sleep"
+        perc_thresholds (List[float]): increasing percentile cutoffs in (0, 1],
+            e.g. [0.2, 0.4, 0.6, 0.8, 1.0]
+        min_tags (int): minimum number of observed transitions in a date × clutch_id
+            subset to include that subset
 
     Returns:
         Dict[float, List[float]]: maps each percentile-window upper bound to a list
-        of all durations accumulated into that window across clutch-days.
-        For example, key 0.5 contains durations in the 0.1–0.5 window if the
-        previous threshold was 0.1.
+        of elapsed durations for that window across all date × clutch_id subsets
     """
+    if eventtype not in {"wake", "sleep"}:
+        raise ValueError("eventtype must be either 'wake' or 'sleep'")
+
     if not perc_thresholds:
         raise ValueError("perc_thresholds must not be empty")
-
-    perc_thresholds = list(perc_thresholds)
 
     if any(p <= 0 or p > 1 for p in perc_thresholds):
         raise ValueError("All percentile thresholds must satisfy 0 < p <= 1")
@@ -51,31 +74,30 @@ def accumulate_to_percentiles(
     if perc_thresholds[-1] != 1.0:
         raise ValueError("The last percentile threshold must be 1.0")
 
+    timecol = f"t_{eventtype}"
+    if timecol not in df.columns:
+        raise ValueError(f"Column '{timecol}' not found in dataframe")
+
     out: Dict[float, List[float]] = {p: [] for p in perc_thresholds}
 
-    for durations in durations_list:
-        durations = np.asarray(durations)
+    for (_, _), subdf in df.groupby(["date", "clutch_id"]):
+        times = np.sort(subdf[timecol].dropna().to_numpy())
 
-        if len(durations) < min_tags:
+        n = len(times)
+        if n < min_tags:
             continue
 
-        durations_sorted = np.sort(durations)
-        n = len(durations_sorted)
+        prev_time = times[0]
 
-        prev_idx = 0
         for p in perc_thresholds:
-            end_idx = math.ceil(p * n)
+            idx = math.ceil(p * n) - 1
+            idx = min(max(idx, 0), n - 1)
 
-            # Guard against any floating-point oddities
-            end_idx = min(max(end_idx, prev_idx), n)
-
-            window_vals = durations_sorted[prev_idx:end_idx]
-            out[p].extend(window_vals.tolist())
-
-            prev_idx = end_idx
+            current_time = times[idx]
+            out[p].append(float(current_time - prev_time))
+            prev_time = current_time
 
     return out
-
 
 def unbiased_exp_param_estimate(data: List[float]) -> float:
     """
@@ -105,7 +127,7 @@ def unbiased_exp_param_estimate(data: List[float]) -> float:
     bias_hat = p_hat*(1-p_hat)/n
     debiased_p_hat = p_hat - bias_hat
 
-    return debiased_p_hat
+    return debiased_p_hat #removing biasing
 
 
 def unbiased_exp_param_sd(data: List[float], n_boot: int = 100) -> float:

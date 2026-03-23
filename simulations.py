@@ -103,7 +103,8 @@ def simulate_master_df(
     start_date = pd.Timestamp("2020-11-28")
     dates = pd.date_range(start_date, periods=30, freq="D")
 
-    clutch_sample_sizes = [20, 30, 40, 50, 60]
+#    clutch_sample_sizes = [20, 30, 40, 50, 60]
+    clutch_sample_sizes = [80, 80, 80, 80, 80]
     wake_offset = 6 * 3600
     sleep_offset = 18 * 3600
 

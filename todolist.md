@@ -2,7 +2,7 @@
 
 ## Juee
 
-- [ ] 
+- [ ] master data sheet (.parquet) 
 - [ ] 
 - [ ] 
 - [ ] 

@@ -27,13 +27,15 @@ def generate_master_sheet():
 
     locations_df = pd.read_csv(
         os.path.join(DATA_DIR, 'individual_night_locations.csv'),
-        usecols=['animal_id', 'cluster_united', 'group_id']
+        usecols=['animal_id', 'cluster_united', 'group_id', 'date']
     )
+    # Rename 'night_date' to 'date' to match sleep_df
+    locations_df.rename(columns={'date': 'night_date'}, inplace=True)
 
-# Merge sleep with locations on 'animal_id'
+    # Merge sleep with locations on 'animal_id' and 'date' (this caused the problem!)
     merged_df = sleep_df.merge(
         locations_df,
-        on='animal_id',
+        on=['animal_id', 'night_date'],
         how='left'
     )
 

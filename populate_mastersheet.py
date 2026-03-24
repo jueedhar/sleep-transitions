@@ -6,9 +6,14 @@ import pyarrow as pa
 This creates a master data sheet from 4 different data sheets, the MRBP Mpala Kenya reference data.csv, cluster_labels.csv and 
 individual_night_locations.csv, combine_sleep_analysis.csv, later two of which are updated daily.
 '''
+# where the script is located
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Data directory (must be a folder named "Data" next to the script)
+DATA_DIR = os.path.join(BASE_DIR, "Data")
 # Input files
 sleep_df = pd.read_csv(
-    r'D:/2025_data_baboons/tillMar2026/populate_mastersheet/combined_sleep_analysis.csv',
+    os.path.join(DATA_DIR, 'combined_sleep_analysis.csv'),
     usecols=['tag', 'night_date', 'onset', 'waking']
 )
 
@@ -16,7 +21,7 @@ sleep_df = pd.read_csv(
 sleep_df.rename(columns={'tag': 'animal_id'}, inplace=True)
 
 locations_df = pd.read_csv(
-    r'D:/2025_data_baboons/tillMar2026/populate_mastersheet/individual_night_locations.csv',
+    DATA_DIR, 'individual_night_locations.csv',
     usecols=['animal_id', 'cluster_united', 'group_id']
 )
 
@@ -29,7 +34,7 @@ merged_df = sleep_df.merge(
 
 # Load cluster labels  to add sleep_site_type
 cluster_labels_df = pd.read_csv(
-    r'D:/2025_data_baboons/tillMar2026/populate_mastersheet/cluster_labels.csv',
+    os.path.join(DATA_DIR, 'cluster_labels.csv'),
     usecols=['cluster_united', 'sleep_site_type']
 )
 
@@ -40,7 +45,7 @@ merged_df = merged_df.merge(
 )
 
 reference_df = pd.read_csv(
-    r'D:/2025_data_baboons/tillMar2026/populate_mastersheet/Baboons MBRP Mpala Kenya-reference-data(12).csv',
+    os.path.join(DATA_DIR, 'Baboons-MBRP-Mpala-Kenya-reference-data.csv'),
     usecols=['animal-id', 'animal-comments', 'animal-sex']
 )
 reference_df.rename(columns={'animal-id': 'animal_id'}, inplace=True)
@@ -64,12 +69,13 @@ final_df.rename(columns={
 
 # Save
 final_df.to_parquet(
-    r'D:/2025_data_baboons/tillMar2026/populate_mastersheet/metadata.parquet',
-    index=False
-)
-final_df.to_csv(
-    r'D:/2025_data_baboons/tillMar2026/populate_mastersheet/metadata.csv',
+    os.path.join(DATA_DIR, 'masterdata.parquet'),
     index=False
 )
 
-print("Merged metadata saved as metadata.parquet and metadata.csv")
+final_df.to_csv(
+    os.path.join(DATA_DIR, 'masterdata.csv'),
+    index=False
+)
+
+print("Merged metadata saved as masterdata.parquet and masterdata.csv")

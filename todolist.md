@@ -4,7 +4,7 @@
 
 - [x] master data sheet (.parquet)
 - [ ] bout distribution 
-- [ ] no. of sleep across different times of night
+- [x] no. of sleep across different times of night
 - [ ] individual sleep across the night
 - [ ] 
 

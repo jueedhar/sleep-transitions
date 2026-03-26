@@ -45,8 +45,8 @@ def read_parquets_to_dfs(parquet_dict):
     
     for idx, (animal_id, file) in enumerate(parquet_dict.items(), start=1):
         try:
-            df1 = pd.read_parquet(file)
-            dfs[f"df{idx}"] = df1
+            df = pd.read_parquet(file)
+            dfs[f"df{idx}"] = {"animal_id": animal_id,"df": df}
             print(f"Loaded {animal_id} into df{idx} ({file})")
         except Exception as e:
             print(f"Failed to read {file}: {e}")

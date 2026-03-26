@@ -65,7 +65,7 @@ def group_sleep_prob_pooled(dfs):
     plt.xlabel("Minute of Day (starts at 00:00 Local Time (i.e. UTC +3))") 
     plt.ylabel("Proportion of collars asleep") 
     plt.ylim(0,1) 
-    plt.title("Propotion of group asleep across 24 hrs") 
+    plt.title("Proportion of group asleep across 24 hrs") 
     plt.legend() 
     plt.grid(True) 
     plt.show()

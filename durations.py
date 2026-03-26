@@ -42,9 +42,12 @@ def get_intervals(events: np.ndarray) -> np.ndarray:
     unique_times, counts = np.unique(events_sorted, return_counts=True)
 
     if unique_times.size < 2:
-        return np.array([], dtype=events.dtype)
+        return np.array([], dtype=float)
 
     diffs = np.diff(unique_times)
+    if diffs.dtype == np.dtype("timedelta64[ns]") or diffs.dtype == np.timedelta64:
+        diffs = diffs.astype(float)
+        diffs /= int(1_000_000_000)
 
     # Repeat each diff according to how many events occur at the later timestamp
     intervals = np.repeat(diffs, counts[1:])
@@ -106,6 +109,8 @@ def get_transition_duration_table(df: pd.DataFrame, eventtype: str) -> pd.DataFr
 
         unique_times, counts = np.unique(events_sorted, return_counts=True)
         diffs = np.diff(unique_times)
+        if diffs.dtype in [np.dtype('timedelta64[ns]'), np.timedelta64]:
+            diffs = diffs.astype(float) / 1_000_000_000
 
         # Build subset-level metadata: keep constant values, else NaN
         metadata = {}

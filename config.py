@@ -6,6 +6,7 @@
 import os
 import os.path
 
+import numpy as np
 
 #Directories
 PROJECTROOT = open(".cw", "r").read().rstrip()
@@ -18,7 +19,7 @@ formats=['png', 'pdf', 'svg']
 
 # Simulation details
 
-PERCENTILE_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1.0]
+PERCENTILE_THRESHOLDS = np.linspace(0.05, 1, 19).tolist()
 MIN_TAGS = 5
 
 #Miscellaneous

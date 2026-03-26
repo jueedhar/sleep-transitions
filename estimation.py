@@ -129,7 +129,6 @@ def unbiased_exp_param_sd(data: List[float], n_boot: int = 100) -> float:
 
     return estimates.std(ddof=1)
 
-
 def get_estimates_of_p_each_n(df: pd.DataFrame, n_boot:int = 100) -> Dict[int, pd.DataFrame]:
     """
     For each value of n_left, use unbiased_exp_param_estimate on the interval

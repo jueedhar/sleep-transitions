@@ -3,14 +3,19 @@
 # pminasandra.github.io
 
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
+import config
 import durations
 import estimation
+import visualisation
+import utilities
 
 def get_percentile_transition_estimates(
     df: pd.DataFrame,
     eventtype: str,
-    percentile_bins,
+    percentile_bins = config.PERCENTILE_THRESHOLDS,
     n_boot: int = 100,
 ) -> pd.DataFrame:
     """
@@ -50,3 +55,27 @@ def get_percentile_transition_estimates(
     )
 
     return out.sort_values("percentile_bin").reset_index(drop=True)
+
+if __name__ == "__main__":
+    masterdf = pd.read_parquet(config.MASTER_DATA_SHEET)
+    results = {}
+    for state in ("sleep", "wake"):
+        results[state] = get_percentile_transition_estimates(masterdf, state)
+
+    fig, axs = plt.subplots(1, 2, sharey=True)
+    i = 0
+    for state in results:
+        ax = axs[i]
+
+        df = results[state]
+        sns.lineplot(data=df, x='percentile_bin', y='p_estimate',
+                            linewidth=0.5, ax=ax)
+        ax.errorbar(x=df['percentile_bin'], y=df['p_estimate'], yerr=df['p_error'],
+                        fmt='none', color='black', linewidth=0.5)
+
+        ax.set_title(state)
+        ax.set_xlabel(f"Proportion a{state}")
+        ax.set_ylabel("Transition probability")
+        i+=1
+
+    utilities.saveimg(fig, "real_transition_probabilities")

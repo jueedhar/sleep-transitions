@@ -171,6 +171,7 @@ def get_estimates_of_p_each_n(df: pd.DataFrame, n_boot:int = 100) -> Dict[int, p
 
             if n_data_points < 2:
                 p_estimate = np.nan
+                p_error = np.nan
             else:
                 p_estimate = unbiased_exp_param_estimate(data.tolist())
                 p_error = unbiased_exp_param_sd(data.tolist(), n_boot=n_boot)

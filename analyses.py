@@ -56,26 +56,53 @@ def get_percentile_transition_estimates(
 
     return out.sort_values("percentile_bin").reset_index(drop=True)
 
-if __name__ == "__main__":
-    masterdf = pd.read_parquet(config.MASTER_DATA_SHEET)
+def analyse_sleep_wake_asymmetry(masterdf: pd.DataFrame):
     results = {}
     for state in ("sleep", "wake"):
         results[state] = get_percentile_transition_estimates(masterdf, state)
 
-    fig, axs = plt.subplots(1, 2, sharey=True)
-    i = 0
+    fig, ax = plt.subplots()
     for state in results:
-        ax = axs[i]
 
+        other = "sleep" if state == "wake" else "wake"
         df = results[state]
         sns.lineplot(data=df, x='percentile_bin', y='p_estimate',
-                            linewidth=0.5, ax=ax)
+                            linewidth=0.5, ax=ax,
+                            label=f"$\\Pr$({other} $\\rightarrow$ {state})")
         ax.errorbar(x=df['percentile_bin'], y=df['p_estimate'], yerr=df['p_error'],
                         fmt='none', color='black', linewidth=0.5)
 
-        ax.set_title(state)
-        ax.set_xlabel(f"Proportion a{state}")
-        ax.set_ylabel("Transition probability")
-        i+=1
+        ax.legend()
+        ax.set_xlabel(f"Proportion already transitioned")
+        ax.set_ylabel("Per capita transition rate ($s^{-1}$)")
 
     utilities.saveimg(fig, "real_transition_probabilities")
+
+
+def analyse_sleep_wake_transitions_sst(masterdf):
+    fig, ax = plt.subplots()
+
+    mdf = masterdf.copy()
+    mdf = mdf[mdf.sleep_site_type != 'Unknown']
+    jitter = 0
+    for stype, dfs in mdf.groupby('sleep_site_type'):
+        results = get_percentile_transition_estimates(dfs, "sleep")
+        sns.lineplot(data=results, x='percentile_bin', y='p_estimate',
+                            linewidth=0.5, ax=ax,
+                            label=f"{stype}")
+        ax.errorbar(x=results['percentile_bin'] + jitter, y=results['p_estimate'],
+                                yerr=results['p_error'],
+                                fmt='none', color='black',
+                                linewidth=0.5)
+        ax.set_title("$\\Pr$(sleep $\\rightarrow$ wake)")
+        jitter += 0.002
+
+    utilities.saveimg(fig, "real_transition_probabilities_sleep_site_type")
+
+
+if __name__ == "__main__":
+    masterdf = pd.read_parquet(config.MASTER_DATA_SHEET)
+    masterdf.dropna(inplace=True)
+
+    analyse_sleep_wake_asymmetry(masterdf)
+    analyse_sleep_wake_transitions_sst(masterdf)

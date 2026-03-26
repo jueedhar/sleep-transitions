@@ -19,7 +19,7 @@ formats=['png', 'pdf', 'svg']
 
 # Simulation details
 
-PERCENTILE_THRESHOLDS = np.linspace(0.05, 1, 19).tolist()
+PERCENTILE_THRESHOLDS = np.linspace(0.1, 1, 9).tolist()
 MIN_TAGS = 5
 
 #Miscellaneous

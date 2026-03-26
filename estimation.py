@@ -7,97 +7,64 @@ Functions to compute transition probabilities based on num already awake
 """
 
 import math
-from typing import List, Dict
+from typing import List, Dict, Sequence
 
 import numpy as np
 import pandas as pd
 
-def accumulate_percentile_window_durations(
-    df: pd.DataFrame,
-    eventtype: str,
-    perc_thresholds: List[float],
-    min_tags: int,
-) -> Dict[float, List[float]]:
+
+def assign_percentile_bin(
+    values: Sequence[float],
+    perc_thresholds: Sequence[float],
+    return_upper: bool = True
+):
     """
-    For each date × clutch_id subset, find the ordered transition timestamps for the
-    requested event type ("wake" or "sleep"), then compute the elapsed duration
-    spanned by each percentile-to-percentile window.
+    Assign each value (proportion in [0, 1]) to a percentile bin defined by
+    increasing thresholds.
 
-    Percentiles are based on event order through time.
-
-    Example:
-        transition times = [21600, 21620, 21670, 21710, 21800]
-        perc_thresholds = [0.2, 0.4, 0.6, 0.8, 1.0]
-
-        n = 5, so cutoff indices are:
-            0.2 -> ceil(0.2 * 5) - 1 = 0
-            0.4 -> ceil(0.4 * 5) - 1 = 1
-            0.6 -> ceil(0.6 * 5) - 1 = 2
-            0.8 -> ceil(0.8 * 5) - 1 = 3
-            1.0 -> ceil(1.0 * 5) - 1 = 4
-
-        corresponding timestamps:
-            [21600, 21620, 21670, 21710, 21800]
-
-        window durations added to the dict:
-            0.2 -> 21600 - 21600 = 0
-            0.4 -> 21620 - 21600 = 20
-            0.6 -> 21670 - 21620 = 50
-            0.8 -> 21710 - 21670 = 40
-            1.0 -> 21800 - 21710 = 90
+    Bins are interpreted as:
+        (0, p1], (p1, p2], ..., (p_{k-1}, p_k]
 
     Args:
-        df (pd.DataFrame): master data frame
-        eventtype (str): "wake" or "sleep"
-        perc_thresholds (List[float]): increasing percentile cutoffs in (0, 1],
-            e.g. [0.2, 0.4, 0.6, 0.8, 1.0]
-        min_tags (int): minimum number of observed transitions in a date × clutch_id
-            subset to include that subset
+        values (array-like): np.ndarray or pd.Series of proportions in [0, 1]
+        perc_thresholds (array-like): sorted thresholds in (0, 1], e.g.
+            [0.2, 0.4, 0.6, 0.8, 1.0]
+        return_upper (bool): if True, return the upper bound of the bin (float).
+            if False, return bin indices (int, 0-based)
 
     Returns:
-        Dict[float, List[float]]: maps each percentile-window upper bound to a list
-        of elapsed durations for that window across all date × clutch_id subsets
+        np.ndarray or pd.Series: same type as input, containing bin labels
     """
-    if eventtype not in {"wake", "sleep"}:
-        raise ValueError("eventtype must be either 'wake' or 'sleep'")
+    thresholds = np.asarray(perc_thresholds)
 
-    if not perc_thresholds:
-        raise ValueError("perc_thresholds must not be empty")
+    if thresholds.ndim != 1 or thresholds.size == 0:
+        raise ValueError("perc_thresholds must be a 1D non-empty array")
 
-    if any(p <= 0 or p > 1 for p in perc_thresholds):
-        raise ValueError("All percentile thresholds must satisfy 0 < p <= 1")
+    if np.any(thresholds <= 0) or np.any(thresholds > 1):
+        raise ValueError("thresholds must satisfy 0 < p <= 1")
 
-    if any(perc_thresholds[i] <= perc_thresholds[i - 1]
-           for i in range(1, len(perc_thresholds))):
-        raise ValueError("perc_thresholds must be strictly increasing")
+    if not np.all(np.diff(thresholds) > 0):
+        raise ValueError("thresholds must be strictly increasing")
 
-    if perc_thresholds[-1] != 1.0:
-        raise ValueError("The last percentile threshold must be 1.0")
+    # Convert input to array for computation
+    is_series = isinstance(values, pd.Series)
+    arr = values.to_numpy() if is_series else np.asarray(values)
 
-    timecol = f"t_{eventtype}"
-    if timecol not in df.columns:
-        raise ValueError(f"Column '{timecol}' not found in dataframe")
+    # Find insertion indices: gives bin index
+    # side='left' ensures values == threshold go to that bin
+    idx = np.searchsorted(thresholds, arr, side="left")
 
-    out: Dict[float, List[float]] = {p: [] for p in perc_thresholds}
+    # Values above last threshold (shouldn't happen if max=1) → last bin
+    idx = np.clip(idx, 0, len(thresholds) - 1)
 
-    for (_, _), subdf in df.groupby(["date", "clutch_id"]):
-        times = np.sort(subdf[timecol].dropna().to_numpy())
+    if return_upper:
+        result = thresholds[idx]
+    else:
+        result = idx
 
-        n = len(times)
-        if n < min_tags:
-            continue
-
-        prev_time = times[0]
-
-        for p in perc_thresholds:
-            idx = math.ceil(p * n) - 1
-            idx = min(max(idx, 0), n - 1)
-
-            current_time = times[idx]
-            out[p].append(float(current_time - prev_time))
-            prev_time = current_time
-
-    return out
+    if is_series:
+        return pd.Series(result, index=values.index)
+    return result
 
 def unbiased_exp_param_estimate(data: List[float]) -> float:
     """
@@ -163,49 +130,209 @@ def unbiased_exp_param_sd(data: List[float], n_boot: int = 100) -> float:
     return estimates.std(ddof=1)
 
 
+def get_estimates_of_p_each_n(df: pd.DataFrame) -> Dict[int, pd.DataFrame]:
+    """
+    For each value of n_left, use unbiased_exp_param_estimate on the interval
+    durations within each percentile bin.
+
+    Assumes the input dataframe contains at least:
+        - 'interval_dur'
+        - 'n_left'
+        - 'percentile_bin'
+
+    Args:
+        df (pd.DataFrame): output from durations.get_transition_duration_table(...),
+            after adding a 'percentile_bin' column
+
+    Returns:
+        Dict[int, pd.DataFrame]: maps each n_left to a dataframe with columns:
+            - 'percentile_bin'
+            - 'p_estimate'
+            - 'p_error'
+            - 'n_data_points'
+    """
+    required_cols = {"interval_dur", "n_left", "percentile_bin"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Input dataframe is missing required columns: {sorted(missing)}"
+        )
+
+    out: Dict[int, pd.DataFrame] = {}
+
+    df_valid = df.dropna(subset=["interval_dur", "n_left", "percentile_bin"]).copy()
+
+    for n_left, subdf in df_valid.groupby("n_left"):
+        rows = []
+
+        for percentile_bin, subsubdf in subdf.groupby("percentile_bin"):
+            data = subsubdf["interval_dur"].to_numpy(dtype=float)
+            n_data_points = len(data)
+
+            if n_data_points < 2:
+                p_estimate = np.nan
+            else:
+                p_estimate = unbiased_exp_param_estimate(data.tolist())
+                p_error = unbiased_exp_param_sd(data.tolist())
+
+            rows.append(
+                {
+                    "percentile_bin": percentile_bin,
+                    "p_estimate": p_estimate,
+                    "p_error": p_error,
+                    "n_data_points": n_data_points
+                }
+            )
+
+        out[int(n_left)] = (
+            pd.DataFrame(rows)
+            .sort_values("percentile_bin")
+            .reset_index(drop=True)
+        )
+
+    return out
+
+
+
+def aggregate_estimates(estimates: Dict[int, pd.DataFrame]) -> pd.DataFrame:
+    """
+    Loops over estimates from different n_left. First corrects estimates assuming
+    geometric distribution correction, by applying
+
+        p_real = 1 - (1 - p_estimate) ** (1 / n_left)
+
+    Then aggregates the corrected estimates and errors, weighting by the number of
+    data points used for each estimate.
+
+    Args:
+        estimates (Dict[int, pd.DataFrame]): output of get_estimates_of_p_each_n
+
+    Returns:
+        pd.DataFrame: with columns 'percentile_bin', 'p_estimate', 'p_error'
+    """
+    rows = []
+
+    for n_left, df_n in estimates.items():
+        required_cols = {"percentile_bin", "p_estimate", "p_error", "n_data_points"}
+        missing = required_cols - set(df_n.columns)
+        if missing:
+            raise ValueError(
+                f"DataFrame for n_left={n_left} is missing columns: {sorted(missing)}"
+            )
+
+        df_n = df_n.copy()
+
+        # Geometric correction from group-level event probability to
+        # per-individual transition probability
+        p_group = df_n["p_estimate"].to_numpy(dtype=float)
+        p_group = np.clip(p_group, 0.0, 1.0)
+
+        p_real = 1.0 - (1.0 - p_group) ** (1.0 / n_left)
+
+        # Propagate error using derivative of:
+        # p_real = 1 - (1-p)^(1/n)
+        # dp_real/dp = (1/n) * (1-p)^(1/n - 1)
+        deriv = (1.0 / n_left) * (1.0 - p_group) ** (1.0 / n_left - 1.0)
+        p_error_real = deriv * df_n["p_error"].to_numpy(dtype=float)
+
+        df_n["p_estimate_real"] = p_real
+        df_n["p_error_real"] = p_error_real
+        df_n["n_left"] = n_left
+
+        rows.append(df_n)
+
+    if not rows:
+        return pd.DataFrame(columns=["percentile_bin", "p_estimate", "p_error"])
+
+    all_estimates = pd.concat(rows, ignore_index=True)
+
+    out_rows = []
+    for percentile_bin, subdf in all_estimates.groupby("percentile_bin"):
+        weights = subdf["n_data_points"].to_numpy(dtype=float)
+        p_vals = subdf["p_estimate_real"].to_numpy(dtype=float)
+        err_vals = subdf["p_error_real"].to_numpy(dtype=float)
+
+        valid = np.isfinite(weights) & np.isfinite(p_vals) & np.isfinite(err_vals) & (weights > 0)
+        if not np.any(valid):
+            out_rows.append(
+                {
+                    "percentile_bin": percentile_bin,
+                    "p_estimate": np.nan,
+                    "p_error": np.nan,
+                }
+            )
+            continue
+
+        weights = weights[valid]
+        p_vals = p_vals[valid]
+        err_vals = err_vals[valid]
+
+        # Weighted mean
+        p_estimate = np.average(p_vals, weights=weights)
+
+        # Error on weighted mean from independent component errors
+        # Var(sum(w_i x_i)/sum(w_i)) = sum(w_i^2 var_i) / (sum(w_i))^2
+        p_error = np.sqrt(np.sum((weights ** 2) * (err_vals ** 2))) / np.sum(weights)
+
+        out_rows.append(
+            {
+                "percentile_bin": percentile_bin,
+                "p_estimate": p_estimate,
+                "p_error": p_error,
+            }
+        )
+
+    return (
+        pd.DataFrame(out_rows)
+        .sort_values("percentile_bin")
+        .reset_index(drop=True)
+    )
+
+
+
 def estimate_exp_by_percentile_df(
-    percentile_durations: Dict[float, List[float]],
+    df: pd.DataFrame,
+    percentile_bins: Sequence[float],
     n_boot: int = 100
 ) -> pd.DataFrame:
     """
     For each percentile window, compute the unbiased exponential rate parameter
-    estimate and its bootstrap standard deviation, and return results as a DataFrame.
+    estimate and its error, and return results as a DataFrame.
+
+    Workflow:
+        1. Assign each row to a percentile bin using proportion_transitioned
+        2. Estimate transition probability separately for each n_left
+        3. Aggregate across n_left after geometric correction
 
     Args:
-        percentile_durations (Dict[float, List[float]]): mapping from percentile
-            window upper bound to the list of durations assigned to that window,
-            typically the output of accumulate_to_percentiles()
-        n_boot (int): number of bootstrap replicates for SD estimation
+        df (pd.DataFrame): output of durations.get_transition_duration_table
+        percentile_bins (list-like): thresholds of percentile bins for estimation
+        n_boot (int): number of bootstrap replicates for SD estimation; passed
+            through to get_estimates_of_p_each_n if that function uses it
 
     Returns:
         pd.DataFrame with columns:
-            - percentile: percentile window upper bound
-            - estimate: unbiased exponential rate parameter estimate
-            - sd: bootstrap standard deviation of the estimate
-            - n: number of durations in that percentile bin
+            - percentile_bin: percentile window upper bound
+            - p_estimate: unbiased exponential rate parameter estimate
+            - p_error: bootstrap standard deviation of the estimate
     """
-    rows = []
+    required_cols = {"interval_dur", "n_left", "proportion_transitioned"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Input dataframe is missing required columns: {sorted(missing)}"
+        )
 
-    for perc, durations in percentile_durations.items():
-        n = len(durations)
+    df = df.copy()
 
-        if n < 2:
-            estimate = np.nan
-            sd = np.nan
-        else:
-            estimate = unbiased_exp_param_estimate(durations)
-            sd = unbiased_exp_param_sd(durations, n_boot=n_boot)
+    df["percentile_bin"] = assign_percentile_bin(
+        df["proportion_transitioned"],
+        percentile_bins,
+        return_upper=True,
+    )
 
-        rows.append({
-            "percentile": perc,
-            "estimate": estimate,
-            "sd": sd,
-            "n": n,
-        })
+    estimates = get_estimates_of_p_each_n(df, n_boot=n_boot)
 
-    df = pd.DataFrame(rows)
+    out = aggregate_estimates(estimates)
 
-    # Sort by percentile for readability
-    df = df.sort_values("percentile").reset_index(drop=True)
-
-    return df
+    return out.sort_values("percentile_bin").reset_index(drop=True)

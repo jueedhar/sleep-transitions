@@ -89,7 +89,6 @@ def run_transition_recovery_benchmark(
 
             for clutch_id, df_sim in df_sim_main.groupby("clutch_id"):
                 for eventtype in ["wake", "sleep"]:
-                    df_sim = df_sim[df_sim[f't_{eventtype}'] > 0]
                     percentile_durations = estimation.accumulate_percentile_window_durations(
                         df = df_sim,
                         eventtype = eventtype,

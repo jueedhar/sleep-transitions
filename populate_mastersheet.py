@@ -74,6 +74,9 @@ def generate_master_sheet():
         'cluster_united': 'clutch_id',
     }, inplace=True)
 
+    final_df.date = pd.to_datetime(final_df.date)
+    final_df.t_sleep = pd.to_datetime(final_df.t_sleep)
+    final_df.t_wake = pd.to_datetime(final_df.t_wake)
     return final_df
 
 # Save
@@ -82,9 +85,6 @@ def save_master_df(df):
         config.MASTER_DATA_SHEET,
         index=False
     )
-
-
-
 
 if __name__ == "__main__":
     master_df = generate_master_sheet()

@@ -130,7 +130,7 @@ def unbiased_exp_param_sd(data: List[float], n_boot: int = 100) -> float:
     return estimates.std(ddof=1)
 
 
-def get_estimates_of_p_each_n(df: pd.DataFrame) -> Dict[int, pd.DataFrame]:
+def get_estimates_of_p_each_n(df: pd.DataFrame, n_boot:int = 100) -> Dict[int, pd.DataFrame]:
     """
     For each value of n_left, use unbiased_exp_param_estimate on the interval
     durations within each percentile bin.
@@ -143,6 +143,7 @@ def get_estimates_of_p_each_n(df: pd.DataFrame) -> Dict[int, pd.DataFrame]:
     Args:
         df (pd.DataFrame): output from durations.get_transition_duration_table(...),
             after adding a 'percentile_bin' column
+        n_boot (int): passed to unbiased_exp_param_sd
 
     Returns:
         Dict[int, pd.DataFrame]: maps each n_left to a dataframe with columns:
@@ -173,7 +174,7 @@ def get_estimates_of_p_each_n(df: pd.DataFrame) -> Dict[int, pd.DataFrame]:
                 p_estimate = np.nan
             else:
                 p_estimate = unbiased_exp_param_estimate(data.tolist())
-                p_error = unbiased_exp_param_sd(data.tolist())
+                p_error = unbiased_exp_param_sd(data.tolist(), n_boot=n_boot)
 
             rows.append(
                 {

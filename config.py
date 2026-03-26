@@ -18,7 +18,7 @@ formats=['png', 'pdf', 'svg']
 
 # Simulation details
 
-PERCENTILE_THRESHOLDS = [0.2, 0.4, 0.6, 0.8, 1.0]
+PERCENTILE_THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1.0]
 MIN_TAGS = 5
 
 #Miscellaneous

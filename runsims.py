@@ -5,27 +5,48 @@
 from typing import Callable, Dict, Tuple
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
+import analyses
 import config
-import durations
-import estimation
 import simulations
 import utilities
 
+def int_to_color(i: int, cmap_name: str = "tab20"):
+    """
+    Map an integer to a deterministic matplotlib color.
 
-def f_memoryless(n: int, n_total: int) -> float:
+    Args:
+        i (int): input integer
+        cmap_name (str): name of matplotlib colormap (default: 'tab20')
+
+    Returns:
+        tuple: RGBA color usable in matplotlib
+    """
+    cmap = plt.get_cmap(cmap_name)
+    n = cmap.N  # number of discrete colors in the cmap
+
+    # ensure deterministic wrap
+    idx = int(i) % n
+
+    return cmap(idx)
+
+def f_memoryless(n, n_total: int) -> float:
     """Constant transition probability."""
-    return 0.003
+    if isinstance(n, int):
+        return 0.003
+    else:
+        return np.array([0.003]*len(n))
 
 
-def f_increasing(n: int, n_total: int) -> float:
+def f_increasing(n, n_total: int) -> float:
     """Quadratically increasing transition probability."""
     return 0.001 + 0.009 * (n / n_total) ** 2
 
 
-def f_saturating(n: int, n_total: int) -> float:
+def f_saturating(n, n_total: int) -> float:
     """Rapidly saturating transition probability."""
     return 0.001 + 0.009 * (n / n_total) ** 0.2
 
@@ -37,34 +58,6 @@ def run_transition_recovery_benchmark(
     n_total_sim: int = 80,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, plt.Figure]:
     """
-    Run repeated simulations for the three matched transition models
-    (memoryless, increasing, saturating), estimate exponential parameters by
-    percentile separately for wake and sleep transitions, and plot the true input
-    function against the recovered estimates.
-
-    Uses:
-        - simulations.simulate_master_df()
-        - durations.get_transition_duration_table()
-        - estimation.accumulate_percentile_window_durations()
-        - estimation.estimate_exp_by_percentile_df()
-
-    Assumes the following are defined in config.py:
-        - config.PERCENTILE_THRESHOLDS
-        - config.MIN_TAGS
-
-    Args:
-        n_reps (int): number of simulated datasets per scenario
-        n_boot (int): bootstrap replicates passed to
-            estimation.estimate_exp_by_percentile_df()
-        t_max (int): maximum number of time steps per simulation
-        n_total_sim (int): total number of individuals per simulated clutch
-
-    Returns:
-        Tuple containing:
-            - all_estimates (pd.DataFrame): one row per replicate × percentile × event
-            - summary (pd.DataFrame): mean estimate and mean bootstrap SD by scenario,
-              event, and percentile
-            - fig (plt.Figure): 3 × 2 panel plot
     """
 
     scenario_functions: Dict[str, Callable[[int, int], float]] = {
@@ -75,10 +68,13 @@ def run_transition_recovery_benchmark(
 
     estimate_frames = []
 
+    fig, axs = plt.subplots(len(scenario_functions), 2, sharey=True)
+    row = 0
     for scenario_name, f_transition in scenario_functions.items():
         print(scenario_name)
+        first_rep = True
         for rep in range(n_reps):
-            print(f"sim {rep} of {n_reps}")
+            print(f"sim {rep+1} of {n_reps}")
             df_sim_main = simulations.simulate_master_df(
                 f_wake_transition_dependence=f_transition,
                 f_sleep_transition_dependence=f_transition,
@@ -87,118 +83,61 @@ def run_transition_recovery_benchmark(
             )
 
 
-            for clutch_id, df_sim in df_sim_main.groupby("clutch_id"):
-                for eventtype in ["wake", "sleep"]:
-                    percentile_durations = estimation.accumulate_percentile_window_durations(
-                        df = df_sim,
-                        eventtype = eventtype,
-                        perc_thresholds=config.PERCENTILE_THRESHOLDS,
-                        min_tags=config.MIN_TAGS,
-                    )
+            for clutch_id, df_sim_sub in df_sim_main.groupby("clutch_id"):
+                clutch_size = int(clutch_id.split('_')[1])
+                for eventtype in ("sleep", "wake"):
+                    col = 0 if eventtype == "sleep" else 1
+                    ax = axs[row, col]
+                    if row == 0:
+                        ax.set_title(eventtype)
+                    if col == 0:
+                        ax.set_ylabel(scenario_name)
 
-                    est_df = estimation.estimate_exp_by_percentile_df(
-                        percentile_durations=percentile_durations,
-                        n_boot=n_boot,
-                    )
+                    if first_rep:
+                        x = np.arange(1, 101)
+                        y = f_transition(x, 100)
+                        label = "True relation" if clutch_size == 20 else None
+                        ax.plot(x/100, y, color="black", linewidth=0.8, label=label)
 
-                    est_df["scenario"] = scenario_name
-                    est_df["eventtype"] = eventtype
-                    est_df["rep"] = rep
-                    est_df["clutch_id"] = clutch_id
-                    estimate_frames.append(est_df)
 
-    all_estimates = pd.concat(estimate_frames, ignore_index=True)
+                    perc_results = analyses.get_percentile_transition_estimates(
+                                        df_sim_sub,
+                                        eventtype,
+                                        percentile_bins=config.PERCENTILE_THRESHOLDS
+                                        )
+                    color = int_to_color(clutch_size, cmap_name='Set1')
+                    label = clutch_id if first_rep else None
+                    sns.lineplot(data=perc_results, x="percentile_bin", y="p_estimate",
+                                        ax=ax, linewidth=0.3, color=color, label=label,
+                                        alpha=0.3)
+                    ax.errorbar(x=perc_results["percentile_bin"],
+                                    y=perc_results["p_estimate"],
+                                    yerr=perc_results["p_error"],
+                                    fmt='none',
+                                    linewidth=0.2,
+                                    color=color,
+                                    alpha=0.3)
+                    ax.legend(
+                            fontsize=6,
+                            title_fontsize=6,
+                            markerscale=0.6,
+                            handlelength=1,
+                            labelspacing=0.3,   # vertical spacing
+                            borderpad=0.3       # padding inside legend box
+                        )
+            first_rep = False
 
-    summary = (
-        all_estimates
-        .groupby(["scenario", "eventtype", "percentile", "clutch_id"], as_index=False)
-        .agg(
-            estimate_mean=("estimate", "mean"),
-            estimate_sd_across_reps=("estimate", "std"),
-            bootstrap_sd_mean=("sd", "mean"),
-            bootstrap_sd_sd=("sd", "std"),
-            n_mean=("n", "mean"),
-        )
-    )
 
-    # Truth curves: evaluate each input function at n = 0..100, normalized to [0, 1]
-    truth_frames = []
-    for scenario_name, f_transition in scenario_functions.items():
-        truth_frames.append(
-            pd.DataFrame(
-                {
-                    "scenario": scenario_name,
-                    "n": list(range(101)),
-                    "x": [n / 100 for n in range(101)],
-                    "true_prob": [f_transition(n, 100) for n in range(101)],
-                }
-            )
-        )
-    truth_df = pd.concat(truth_frames, ignore_index=True)
+        row += 1
+        print()
+    return fig
 
-    sns.set_theme(style="whitegrid")
-    fig, axes = plt.subplots(
-        3, 2, figsize=(12, 12), sharex=True, sharey=True, constrained_layout=True
-    )
-
-    scenario_order = ["memoryless", "increasing", "saturating"]
-    event_order = ["wake", "sleep"]
-
-    for i, scenario_name in enumerate(scenario_order):
-        for j, eventtype in enumerate(event_order):
-            ax = axes[i, j]
-
-            truth_sub = truth_df[truth_df["scenario"] == scenario_name]
-            est_sub = summary[
-                (summary["scenario"] == scenario_name)
-                & (summary["eventtype"] == eventtype)
-            ].sort_values("percentile")
-
-            sns.lineplot(
-                data=truth_sub,
-                x="x",
-                y="true_prob",
-                ax=ax,
-                color="black",
-            )
-
-            for clutch_id, est_sub_cl in est_sub.groupby("clutch_id"):
-                sns.lineplot(
-                    data=est_sub_cl,
-                    x="percentile",
-                    y="estimate_mean",
-                    label=f"estimate: {clutch_id}",
-                    marker="o",
-                    ax=ax,
-                )
-
-                ax.errorbar(
-                    est_sub["percentile"],
-                    est_sub["estimate_mean"],
-                    yerr=est_sub["bootstrap_sd_mean"],
-                    fmt="none",
-                    capsize=3,
-                    color=sns.color_palette()[0],
-                )
-
-            if i == 0:
-                ax.set_title(eventtype)
-            if j == 0:
-                ax.set_ylabel(f"{scenario_name}\nprobability / estimate")
-            else:
-                ax.set_ylabel("")
-
-            ax.set_xlabel("fraction transitioned")
-            ax.set_xlim(0, 1)
-
-    return all_estimates, summary, fig
 
 if __name__ == "__main__":
-    all_estimates, summary, fig = run_transition_recovery_benchmark(
-        n_reps=10,
+    fig = run_transition_recovery_benchmark(
+        n_reps=25,
         n_boot=100,
         t_max=5000,
         n_total_sim=80)
 
-    print(summary)
     utilities.saveimg(fig, "sim_results")

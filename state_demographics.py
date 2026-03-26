@@ -182,6 +182,7 @@ def ind_transitions_pooled(dfs):
 
 
 if __name__ == "__main__":
+    group_id_input = "your_group_id_here"
     parquet_files = inactivity_parquet_load.get_parquet_files_for_group(group_id_input)
     dfs = inactivity_parquet_load.read_parquets_to_dfs(parquet_files)
 

@@ -32,7 +32,7 @@ def generate_master_sheet():
     # Rename 'night_date' to 'date' to match sleep_df
     locations_df.rename(columns={'date': 'night_date'}, inplace=True)
 
-    # Merge sleep with locations on 'animal_id' and 'date' (this caused the problem!)
+    # Merge both on 'animal_id' and 'date' (this caused the problem with the repeats!)
     merged_df = sleep_df.merge(
         locations_df,
         on=['animal_id', 'night_date'],
@@ -60,7 +60,7 @@ def generate_master_sheet():
 
     final_df = merged_df.merge(
         reference_df,
-        on='animal_id',  # now all merges use the same column
+        on= ['animal_id', 'night_date'],  # now all merges use the same column
         how='left'
     )
 # Rename columns 
@@ -73,6 +73,15 @@ def generate_master_sheet():
         'animal-sex': 'sex',
         'cluster_united': 'clutch_id',
     }, inplace=True)
+
+    # Ensure proper sorting for lag operation
+    final_df = final_df.sort_values(['ind', 'date'])
+
+    # wake_site_type = previous day's sleep_site_type
+    final_df['wake_site_type'] = final_df.groupby('ind')['sleep_site_type'].shift(1)
+
+    # clutch_size = number of individuals in same clutch (per date)
+    final_df['clutch_size'] = final_df.groupby(['date', 'clutch_id'])['ind'].transform('nunique')
 
     final_df.date = pd.to_datetime(final_df.date)
     final_df.t_sleep = pd.to_datetime(final_df.t_sleep)

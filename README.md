@@ -30,7 +30,8 @@ and wake states, and (c) runs simulations to prove that the debiasing works well
 
    ```
    baboon_sleep_wake_transitions.parquet        cluster_labels.csv           individual_night_locations.csv      metadata.csv      populate_mastersheet.py
-Baboons-MBRP-Mpala-Kenya-reference-data.csv  combined_sleep_analysis.csv  individual_night_locations.parquet  metadata.parquet
+    Baboons-MBRP-Mpala-Kenya-reference-data.csv  combined_sleep_analysis.csv  individual_night_locations.parquet  metadata.parquet
+
    ```
 
    (Juee is working on automating this)
@@ -55,6 +56,8 @@ Baboons-MBRP-Mpala-Kenya-reference-data.csv  combined_sleep_analysis.csv  indivi
 
     (depending on your setup, you might need to run `python3` instead of
     `python`.
+
+-------------------------------------------------------------------
 
 ## Unbiased relation estimation
 

@@ -1,13 +1,18 @@
 #!pip install powerlaw
 
+import os.path
+
 import pandas as pd
 import powerlaw
 import matplotlib.pyplot as plt
+
+import config
 from inactivity_parquet_load import get_parquet_files_for_group, read_parquets_to_dfs  
 
 BASE_DIR = config.PROJECTROOT
-metadata_path = os.path.join(BASE_DIR, "Baboons MBRP Mpala Kenya-reference-data.csv")
-base_inactivity_path = os.path.join(BASE_DIR, "inactivity")
+metadata_path = os.path.join(config.DATA, "Baboons-MBRP-Mpala-Kenya-reference-data.csv")
+base_inactivity_path =\
+"/media/pranav/MPI_Dirs/EAS_shared/baboon/working/data/processed/2025/acc/inactivity"
 
 def inter_bout_intervals(series, target=0):
     """
@@ -84,24 +89,26 @@ def fit_and_plot_IBI(data, series_name="IBI Series"):
 
 
     # Plot
-    plt.figure(figsize=(8,6))
-    fit.plot_ccdf(label='Data', linewidth=2, color='black')
-    fit.power_law.plot_ccdf(label='Power law')
-    fit.truncated_power_law.plot_ccdf(label='Truncated Power Law')
-    fit.lognormal.plot_ccdf(label='Lognormal')
-    fit.stretched_exponential.plot_ccdf(label='Weibull')
-    fit.exponential.plot_ccdf(label='Exponential')
-    plt.legend()
-    plt.xlabel('Inter-bout interval')
-    plt.ylabel('CCDF')
-    plt.ylim(1e-5, 1)
-    plt.title(f'Distribution comparison for {series_name}')
+    fig, ax = plt.subplots(figsize=(8,6))
+    fit.plot_ccdf(label='Data', linewidth=2, color='black', ax=ax)
+    fit.power_law.plot_ccdf(label='Power law', ax=ax)
+    fit.truncated_power_law.plot_ccdf(label='Truncated Power Law', ax=ax)
+    fit.lognormal.plot_ccdf(label='Lognormal', ax=ax)
+    fit.stretched_exponential.plot_ccdf(label='Weibull', ax=ax)
+    fit.exponential.plot_ccdf(label='Exponential', ax=ax)
+    ax.legend()
+    ax.set_xlabel('Inter-bout interval')
+    ax.set_ylabel('CCDF')
+    ax.set_ylim(1e-5, 1)
+    ax.set_title(f'Distribution comparison for {series_name}')
     plt.show()
+
+    return fig, ax
 
 
 if __name__ == "__main__":
     metadata = pd.read_csv(metadata_path)
-    group_id_input = "your_group_id_here"
+    group_id_input = "Lapis"
     parquet_files = get_parquet_files_for_group(metadata, group_id_input, base_path=base_inactivity_path)
     dfs = read_parquets_to_dfs(parquet_files)
 
@@ -122,4 +129,6 @@ if __name__ == "__main__":
         freq = bout_df(counts)
 
         # Fit distributions and plot
-        fit_and_plot_IBI(counts, series_name=df_name)
+        fig, ax = fit_and_plot_IBI(counts, series_name=df_name)
+        plt.close(fig)
+        plt.cla()

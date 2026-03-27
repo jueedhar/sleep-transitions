@@ -58,7 +58,7 @@ if __name__ == "__main__":
     metadata = pd.read_csv(metadata_path)
     group_id_input = "Chartreuse" #change only this to load data for a particular group
 
-    parquet_files = get_parquet_files_for_group(group_id_input)
+    parquet_files = get_parquet_files_for_group(metadata, group_id_input,base_path=base_inactivity_path) # FIXED: pass metadata
     dfs = read_parquets_to_dfs(parquet_files)
 
     assigned_dfs = []
@@ -72,3 +72,8 @@ if __name__ == "__main__":
 
     n_dfs = len(assigned_dfs)
     print(f"\nTotal DataFrames assigned: {n_dfs}")
+
+    metadata = pd.read_csv(metadata_path)
+    group_id_input = "Chartreuse"
+
+    

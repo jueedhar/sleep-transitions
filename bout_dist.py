@@ -1,10 +1,13 @@
-!pip install powerlaw
+#!pip install powerlaw
 
 import pandas as pd
 import powerlaw
 import matplotlib.pyplot as plt
 from inactivity_parquet_load import get_parquet_files_for_group, read_parquets_to_dfs  
 
+BASE_DIR = config.PROJECTROOT
+metadata_path = os.path.join(BASE_DIR, "Baboons MBRP Mpala Kenya-reference-data.csv")
+base_inactivity_path = os.path.join(BASE_DIR, "inactivity")
 
 def inter_bout_intervals(series, target=0):
     """
@@ -97,8 +100,9 @@ def fit_and_plot_IBI(data, series_name="IBI Series"):
 
 
 if __name__ == "__main__":
+    metadata = pd.read_csv(metadata_path)
     group_id_input = "your_group_id_here"
-    parquet_files = get_parquet_files_for_group(group_id_input)
+    parquet_files = get_parquet_files_for_group(metadata, group_id_input, base_path=base_inactivity_path)
     dfs = read_parquets_to_dfs(parquet_files)
 
     assigned_dfs = []
@@ -106,10 +110,9 @@ if __name__ == "__main__":
         if df_obj is not None:
             assigned_dfs.append(df_name)
 
-
     # Compute IBIs
     for df_name in assigned_dfs:
-        df = dfs[df_name]
+        df = dfs[df_name]['df']
         if 'pot_sleep' not in df.columns:
             print(f"{df_name} has no 'pot_sleep' column, skipping.")
             continue

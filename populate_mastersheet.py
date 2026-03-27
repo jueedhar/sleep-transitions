@@ -60,7 +60,7 @@ def generate_master_sheet():
 
     final_df = merged_df.merge(
         reference_df,
-        on= ['animal_id', 'night_date'],  # now all merges use the same column
+        on= 'animal_id',  # now all merges use the same column
         how='left'
     )
 # Rename columns 

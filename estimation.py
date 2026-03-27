@@ -129,10 +129,20 @@ def unbiased_exp_param_sd(data: List[float], n_boot: int = 100) -> float:
 
     return estimates.std(ddof=1)
 
-def get_estimates_of_p_each_n(df: pd.DataFrame, n_boot:int = 100) -> Dict[int, pd.DataFrame]:
+
+def get_estimates_of_p_each_n(
+    df: pd.DataFrame,
+    n_boot: int = 100,
+    foreach: str = "none"
+) -> Dict[int, pd.DataFrame]:
     """
     For each value of n_left, use unbiased_exp_param_estimate on the interval
     durations within each percentile bin.
+
+    If `foreach != "none"`, estimation is done separately for each unique value in
+    `df[foreach]`, but the existing `n_left` and `percentile_bin` columns are used
+    as-is. This means those quantities are assumed to have been computed from the full
+    group, not recomputed within each foreach subgroup.
 
     Assumes the input dataframe contains at least:
         - 'interval_dur'
@@ -143,6 +153,8 @@ def get_estimates_of_p_each_n(df: pd.DataFrame, n_boot:int = 100) -> Dict[int, p
         df (pd.DataFrame): output from durations.get_transition_duration_table(...),
             after adding a 'percentile_bin' column
         n_boot (int): passed to unbiased_exp_param_sd
+        foreach (str): either "none", or a column name in df. If not "none",
+            estimates are computed separately for each unique value in this column.
 
     Returns:
         Dict[int, pd.DataFrame]: maps each n_left to a dataframe with columns:
@@ -150,6 +162,8 @@ def get_estimates_of_p_each_n(df: pd.DataFrame, n_boot:int = 100) -> Dict[int, p
             - 'p_estimate'
             - 'p_error'
             - 'n_data_points'
+        and, if foreach != "none":
+            - foreach
     """
     required_cols = {"interval_dur", "n_left", "percentile_bin"}
     missing = required_cols - set(df.columns)
@@ -158,44 +172,79 @@ def get_estimates_of_p_each_n(df: pd.DataFrame, n_boot:int = 100) -> Dict[int, p
             f"Input dataframe is missing required columns: {sorted(missing)}"
         )
 
+    if foreach != "none" and foreach not in df.columns:
+        raise ValueError(f"foreach='{foreach}' is not a column in df")
+
     out: Dict[int, pd.DataFrame] = {}
 
-    df_valid = df.dropna(subset=["interval_dur", "n_left", "percentile_bin"]).copy()
+    subset_cols = ["interval_dur", "n_left", "percentile_bin"]
+    if foreach != "none":
+        subset_cols.append(foreach)
+
+    df_valid = df.dropna(subset=subset_cols).copy()
 
     for n_left, subdf in df_valid.groupby("n_left"):
         rows = []
 
-        for percentile_bin, subsubdf in subdf.groupby("percentile_bin"):
-            data = subsubdf["interval_dur"].to_numpy(dtype=float)
-            n_data_points = len(data)
+        if foreach == "none":
+            grouped = subdf.groupby("percentile_bin")
+            for percentile_bin, subsubdf in grouped:
+                data = subsubdf["interval_dur"].to_numpy(dtype=float)
+                n_data_points = len(data)
 
-            if n_data_points < 2:
-                p_estimate = np.nan
-                p_error = np.nan
-            else:
-                p_estimate = unbiased_exp_param_estimate(data.tolist())
-                p_error = unbiased_exp_param_sd(data.tolist(), n_boot=n_boot)
+                if n_data_points < 2:
+                    p_estimate = np.nan
+                    p_error = np.nan
+                else:
+                    p_estimate = unbiased_exp_param_estimate(data.tolist())
+                    p_error = unbiased_exp_param_sd(data.tolist(), n_boot=n_boot)
 
-            rows.append(
-                {
-                    "percentile_bin": percentile_bin,
-                    "p_estimate": p_estimate,
-                    "p_error": p_error,
-                    "n_data_points": n_data_points
-                }
-            )
+                rows.append(
+                    {
+                        "percentile_bin": percentile_bin,
+                        "p_estimate": p_estimate,
+                        "p_error": p_error,
+                        "n_data_points": n_data_points,
+                    }
+                )
+        else:
+            grouped = subdf.groupby([foreach, "percentile_bin"])
+            for (foreach_value, percentile_bin), subsubdf in grouped:
+                data = subsubdf["interval_dur"].to_numpy(dtype=float)
+                n_data_points = len(data)
+
+                if n_data_points < 2:
+                    p_estimate = np.nan
+                    p_error = np.nan
+                else:
+                    p_estimate = unbiased_exp_param_estimate(data.tolist())
+                    p_error = unbiased_exp_param_sd(data.tolist(), n_boot=n_boot)
+
+                rows.append(
+                    {
+                        foreach: foreach_value,
+                        "percentile_bin": percentile_bin,
+                        "p_estimate": p_estimate,
+                        "p_error": p_error,
+                        "n_data_points": n_data_points,
+                    }
+                )
 
         out[int(n_left)] = (
             pd.DataFrame(rows)
-            .sort_values("percentile_bin")
+            .sort_values(
+                [foreach, "percentile_bin"] if foreach != "none" else ["percentile_bin"]
+            )
             .reset_index(drop=True)
         )
 
     return out
 
 
-
-def aggregate_estimates(estimates: Dict[int, pd.DataFrame]) -> pd.DataFrame:
+def aggregate_estimates(
+    estimates: Dict[int, pd.DataFrame],
+    foreach: str = "none"
+) -> pd.DataFrame:
     """
     Loops over estimates from different n_left. First corrects estimates assuming
     geometric distribution correction, by applying
@@ -205,16 +254,25 @@ def aggregate_estimates(estimates: Dict[int, pd.DataFrame]) -> pd.DataFrame:
     Then aggregates the corrected estimates and errors, weighting by the number of
     data points used for each estimate.
 
+    If foreach != "none", aggregation is done separately for each unique value in
+    that column, and the output also contains that column.
+
     Args:
         estimates (Dict[int, pd.DataFrame]): output of get_estimates_of_p_each_n
+        foreach (str): either "none", or a column name present in the estimate
+            dataframes
 
     Returns:
-        pd.DataFrame: with columns 'percentile_bin', 'p_estimate', 'p_error'
+        pd.DataFrame: with columns 'percentile_bin', 'p_estimate', 'p_error', and
+        additionally the foreach column if requested
     """
     rows = []
 
     for n_left, df_n in estimates.items():
         required_cols = {"percentile_bin", "p_estimate", "p_error", "n_data_points"}
+        if foreach != "none":
+            required_cols.add(foreach)
+
         missing = required_cols - set(df_n.columns)
         if missing:
             raise ValueError(
@@ -223,16 +281,11 @@ def aggregate_estimates(estimates: Dict[int, pd.DataFrame]) -> pd.DataFrame:
 
         df_n = df_n.copy()
 
-        # Geometric correction from group-level event probability to
-        # per-individual transition probability
         p_group = df_n["p_estimate"].to_numpy(dtype=float)
         p_group = np.clip(p_group, 0.0, 1.0)
 
         p_real = 1.0 - (1.0 - p_group) ** (1.0 / n_left)
 
-        # Propagate error using derivative of:
-        # p_real = 1 - (1-p)^(1/n)
-        # dp_real/dp = (1/n) * (1-p)^(1/n - 1)
         deriv = (1.0 / n_left) * (1.0 - p_group) ** (1.0 / n_left - 1.0)
         p_error_real = deriv * df_n["p_error"].to_numpy(dtype=float)
 
@@ -243,58 +296,74 @@ def aggregate_estimates(estimates: Dict[int, pd.DataFrame]) -> pd.DataFrame:
         rows.append(df_n)
 
     if not rows:
-        return pd.DataFrame(columns=["percentile_bin", "p_estimate", "p_error"])
+        cols = ["percentile_bin", "p_estimate", "p_error"]
+        if foreach != "none":
+            cols = [foreach] + cols
+        return pd.DataFrame(columns=cols)
 
     all_estimates = pd.concat(rows, ignore_index=True)
 
+    group_cols = ["percentile_bin"] if foreach == "none" else [foreach, "percentile_bin"]
+
     out_rows = []
-    for percentile_bin, subdf in all_estimates.groupby("percentile_bin"):
+    for group_key, subdf in all_estimates.groupby(group_cols):
         weights = subdf["n_data_points"].to_numpy(dtype=float)
         p_vals = subdf["p_estimate_real"].to_numpy(dtype=float)
         err_vals = subdf["p_error_real"].to_numpy(dtype=float)
 
-        valid = np.isfinite(weights) & np.isfinite(p_vals) & np.isfinite(err_vals) & (weights > 0)
+        valid = (
+            np.isfinite(weights)
+            & np.isfinite(p_vals)
+            & np.isfinite(err_vals)
+            & (weights > 0)
+        )
+
+        if foreach == "none":
+            percentile_bin = group_key[0]
+            base_row = {"percentile_bin": percentile_bin}
+        else:
+            foreach_value, percentile_bin = group_key
+            base_row = {foreach: foreach_value, "percentile_bin": percentile_bin}
+
         if not np.any(valid):
-            out_rows.append(
+            base_row.update(
                 {
-                    "percentile_bin": percentile_bin,
                     "p_estimate": np.nan,
                     "p_error": np.nan,
                 }
             )
+            out_rows.append(base_row)
             continue
 
         weights = weights[valid]
         p_vals = p_vals[valid]
         err_vals = err_vals[valid]
 
-        # Weighted mean
         p_estimate = np.average(p_vals, weights=weights)
-
-        # Error on weighted mean from independent component errors
-        # Var(sum(w_i x_i)/sum(w_i)) = sum(w_i^2 var_i) / (sum(w_i))^2
         p_error = np.sqrt(np.sum((weights ** 2) * (err_vals ** 2))) / np.sum(weights)
 
-        out_rows.append(
+        base_row.update(
             {
-                "percentile_bin": percentile_bin,
                 "p_estimate": p_estimate,
                 "p_error": p_error,
             }
         )
+        out_rows.append(base_row)
+
+    sort_cols = ["percentile_bin"] if foreach == "none" else [foreach, "percentile_bin"]
 
     return (
         pd.DataFrame(out_rows)
-        .sort_values("percentile_bin")
+        .sort_values(sort_cols)
         .reset_index(drop=True)
     )
-
 
 
 def estimate_exp_by_percentile_df(
     df: pd.DataFrame,
     percentile_bins: Sequence[float],
-    n_boot: int = 100
+    n_boot: int = 100,
+    foreach: str = "none",
 ) -> pd.DataFrame:
     """
     For each percentile window, compute the unbiased exponential rate parameter
@@ -305,19 +374,30 @@ def estimate_exp_by_percentile_df(
         2. Estimate transition probability separately for each n_left
         3. Aggregate across n_left after geometric correction
 
+    If foreach != "none", steps 2 and 3 are done separately for each unique value
+    in df[foreach], while still using the full-group n_left and percentile_bin values
+    already present in the input rows.
+
     Args:
         df (pd.DataFrame): output of durations.get_transition_duration_table
         percentile_bins (list-like): thresholds of percentile bins for estimation
         n_boot (int): number of bootstrap replicates for SD estimation; passed
-            through to get_estimates_of_p_each_n if that function uses it
+            to get_estimates_of_p_each_n
+        foreach (str): either "none", or a column name in df along which estimates
+            should be computed separately
 
     Returns:
         pd.DataFrame with columns:
             - percentile_bin: percentile window upper bound
             - p_estimate: unbiased exponential rate parameter estimate
             - p_error: bootstrap standard deviation of the estimate
+        and, if foreach != "none":
+            - foreach
     """
     required_cols = {"interval_dur", "n_left", "proportion_transitioned"}
+    if foreach != "none":
+        required_cols.add(foreach)
+
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(
@@ -332,8 +412,16 @@ def estimate_exp_by_percentile_df(
         return_upper=True,
     )
 
-    estimates = get_estimates_of_p_each_n(df, n_boot=n_boot)
+    estimates = get_estimates_of_p_each_n(
+        df,
+        n_boot=n_boot,
+        foreach=foreach,
+    )
 
-    out = aggregate_estimates(estimates)
+    out = aggregate_estimates(
+        estimates,
+        foreach=foreach,
+    )
 
-    return out.sort_values("percentile_bin").reset_index(drop=True)
+    sort_cols = ["percentile_bin"] if foreach == "none" else [foreach, "percentile_bin"]
+    return out.sort_values(sort_cols).reset_index(drop=True)

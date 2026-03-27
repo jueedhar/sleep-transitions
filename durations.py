@@ -60,9 +60,10 @@ def get_transition_duration_table(df: pd.DataFrame, eventtype: str) -> pd.DataFr
     Loops across dates, and within each date across clutch_ids, and returns a table
     of inter-event durations for sleep or wake events.
 
-    Each output row corresponds to one transition interval. If multiple individuals
-    transition simultaneously at the later timestamp, that interval is repeated once
-    per individual, matching the behaviour of get_intervals().
+    Each output row corresponds to a specific individual transition, not just an
+    abstract repeated interval. If multiple individuals transition simultaneously at
+    the later timestamp, one row is emitted per transitioning individual, each carrying
+    that individual's metadata.
 
     For each interval row:
         - interval_dur: time until the focal transition
@@ -71,8 +72,8 @@ def get_transition_duration_table(df: pd.DataFrame, eventtype: str) -> pd.DataFr
         - proportion_transitioned: proportion already transitioned during that
           interval, i.e. before the focal transition
 
-    Metadata columns from the master dataframe are copied in. For columns that are
-    not constant within a date × clutch subset, NaN is inserted.
+    The first transition timestamp in each date × clutch subset is skipped, as there
+    is no preceding inter-event duration to assign to it.
 
     Args:
         df (pd.DataFrame): master data frame with all sleep/wake data
@@ -80,7 +81,7 @@ def get_transition_duration_table(df: pd.DataFrame, eventtype: str) -> pd.DataFr
 
     Returns:
         pd.DataFrame: with columns 'interval_dur', 'n_total', 'n_left',
-        'proportion_transitioned', and metadata columns from the master dataframe.
+        'proportion_transitioned', and all original columns from the master dataframe.
     """
     if eventtype not in {"sleep", "wake"}:
         raise ValueError("eventtype must be either 'sleep' or 'wake'")
@@ -91,49 +92,51 @@ def get_transition_duration_table(df: pd.DataFrame, eventtype: str) -> pd.DataFr
 
     rows = []
 
-    # These columns are individual-specific event data and do not map cleanly onto
-    # interval rows, so they are excluded from direct copying.
-    excluded_metadata = {"ind", "t_wake", "t_sleep"}
-    metadata_cols = [c for c in df.columns if c not in excluded_metadata]
-
     for (_, _), subdf in df.groupby(["date", "clutch_id"]):
-        events = subdf[timecol].dropna().to_numpy()
-        if events.size < 2:
+        subdf_event = subdf.dropna(subset=[timecol]).copy()
+        if len(subdf_event) < 2:
             continue
 
-        events_sorted = np.sort(events)
-        intervals = get_intervals(events_sorted)
+        subdf_event = subdf_event.sort_values(timecol)
 
-        if intervals.size == 0:
+        times = subdf_event[timecol].to_numpy()
+        unique_times, counts = np.unique(times, return_counts=True)
+
+        if len(unique_times) < 2:
             continue
 
-        unique_times, counts = np.unique(events_sorted, return_counts=True)
         diffs = np.diff(unique_times)
-        if diffs.dtype in [np.dtype('timedelta64[ns]'), np.timedelta64]:
-            diffs = diffs.astype(float) / 1_000_000_000
+        if np.issubdtype(diffs.dtype, np.timedelta64):
+            diffs = diffs / np.timedelta64(1, "s")
 
-        # Build subset-level metadata: keep constant values, else NaN
-        metadata = {}
-        for col in metadata_cols:
-            vals = subdf[col].dropna().unique()
-            metadata[col] = vals[0] if len(vals) == 1 else np.nan
-
-        n_total = len(events_sorted)
+        n_total = len(subdf_event)
         transitioned_so_far = counts[0]
 
-        for diff, later_count in zip(diffs, counts[1:]):
+        for prev_time, this_time, diff, later_count in zip(
+            unique_times[:-1], unique_times[1:], diffs, counts[1:]
+        ):
             n_left = n_total - transitioned_so_far
             proportion_transitioned = transitioned_so_far / n_total
 
-            for _ in range(later_count):
-                row = {
-                    "interval_dur": diff,
-                    "n_total": n_total,
-                    "n_left": n_left,
-                    "proportion_transitioned": proportion_transitioned,
-                    "eventtype": eventtype,
-                }
-                row.update(metadata)
+            transitioners = subdf_event[subdf_event[timecol] == this_time].copy()
+
+            # Safety check: this should match later_count from np.unique
+            if len(transitioners) != later_count:
+                raise RuntimeError(
+                    "Mismatch between unique-count calculation and transitioning rows"
+                )
+
+            for _, ind_row in transitioners.iterrows():
+                row = ind_row.to_dict()
+                row.update(
+                    {
+                        "interval_dur": float(diff),
+                        "n_total": n_total,
+                        "n_left": n_left,
+                        "proportion_transitioned": proportion_transitioned,
+                        "eventtype": eventtype,
+                    }
+                )
                 rows.append(row)
 
             transitioned_so_far += later_count
@@ -146,5 +149,6 @@ if __name__ == "__main__":
     masterdf.dropna(inplace=True)
 
     t_df = get_transition_duration_table(masterdf, "wake")
+    print(t_df)
 
 

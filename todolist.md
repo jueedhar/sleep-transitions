@@ -3,10 +3,9 @@
 ## Juee
 
 - [x] master data sheet (.parquet)
-- [ ] bout distribution 
+- [x] bout distribution 
 - [x] no. of sleep across different times of night
-- [ ] individual sleep across the night
-- [ ] 
+- [x] individual sleep across the night
 - [ ] add wake-site type
 
 ## Pranav

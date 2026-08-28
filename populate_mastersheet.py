@@ -1,4 +1,5 @@
 # Juee Dhar
+# 25 Aug 2026
 
 import os
 
@@ -9,16 +10,13 @@ import config
 
 '''
 This creates a master data sheet from 4 different data sheets, the MRBP Mpala Kenya reference data.csv, cluster_labels.csv and 
-individual_night_locations.csv, combine_sleep_analysis.csv, later two of which are updated daily.
+individual_night_locations.csv, combine_sleep_analysis.csv, later two of which are updated daily. Later also from the GS_collars_demographics.csv 
+we get group size class.
 '''
 
 def generate_master_sheet():
-# where the script is located
     BASE_DIR = config.PROJECTROOT
-
-# Data directory (must be a folder named "Data" next to the script)
     DATA_DIR = config.DATA
-# Input files
     sleep_df = pd.read_csv(
         os.path.join(DATA_DIR, 'combined_sleep_analysis.csv'),
         usecols=['tag', 'night_date', 'onset', 'waking']
@@ -34,7 +32,7 @@ def generate_master_sheet():
     # Rename 'night_date' to 'date' to match sleep_df
     locations_df.rename(columns={'date': 'night_date'}, inplace=True)
 
-    # Merge both on 'animal_id' and 'date' (this caused the problem with the repeats!)
+    # Merge both on 'animal_id' and 'date' 
     merged_df = sleep_df.merge(
         locations_df,
         on=['animal_id', 'night_date'],
@@ -58,6 +56,9 @@ def generate_master_sheet():
         usecols=['animal-id', 'animal-comments', 'animal-sex']
     )
     reference_df.rename(columns={'animal-id': 'animal_id'}, inplace=True)
+    # Some animals have multiple deployment records (re-collared) sharing the
+    # same animal_id, which fans out the merge below. Keeps one row per id.
+    reference_df = reference_df.drop_duplicates(subset='animal_id')
 
 
     final_df = merged_df.merge(
@@ -88,6 +89,18 @@ def generate_master_sheet():
     final_df.date = pd.to_datetime(final_df.date)
     final_df.t_sleep = pd.to_datetime(final_df.t_sleep)
     final_df.t_wake = pd.to_datetime(final_df.t_wake)
+
+    demographics_df = pd.read_csv(
+        os.path.join(DATA_DIR, 'GS_collars_demographics.csv'), #for group size S/M/L 
+        usecols=['group_id', 'size_class']
+    )
+
+    final_df = final_df.merge(
+        demographics_df,
+        on='group_id',
+        how='left'
+    )
+
     return final_df
 
 # Save

@@ -30,11 +30,12 @@ and wake states, and (c) runs simulations to prove that the debiasing works well
 
    ```
    baboon_sleep_wake_transitions.parquet        cluster_labels.csv           individual_night_locations.csv      metadata.csv      populate_mastersheet.py
-    Baboons-MBRP-Mpala-Kenya-reference-data.csv  combined_sleep_analysis.csv  individual_night_locations.parquet  metadata.parquet
+    Baboons-MBRP-Mpala-Kenya-reference-data.csv  combined_sleep_analysis.csv  individual_night_locations.parquet  metadata.parquet  GS_collars_demographics.csv 
 
    ```
+   as well as the inactivity folder. 
 
-   (Juee is working on automating this)
+   (Juee is working on automating this. 4 months later - Juee has forgotten about this.)
 
 4. Moving to the 'PROJECTROOT' directory, run `git clone
    https://github.com/jueedhar/sleep-transitions code/`
@@ -57,7 +58,12 @@ and wake states, and (c) runs simulations to prove that the debiasing works well
     (depending on your setup, you might need to run `python3` instead of
     `python`.
 
+7. Dependencies - pip install numpy pandas matplotlib seaborn tqdm
+
 -------------------------------------------------------------------
+## Analyses
+
+The analyses splits the transition events into "edge_events" and "bulk_events", with edge_events corresponding with the onset and offset of the sleep period and bulk events are all events between these edge events, with a BULK_EXCLUSION_WINDOW_MIN buffer around the edge events. 
 
 ## Unbiased relation estimation
 

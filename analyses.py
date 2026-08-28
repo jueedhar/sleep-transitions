@@ -1,270 +1,303 @@
-# Pranav Minasandra
-# 26 Mar 2026
-# pminasandra.github.io
+# Juee Dhar 25 Aug 2026
+# Pranav Minasandra March 23, 2026
 
-from typing import Sequence
-import math
+import os
 
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from tqdm.auto import tqdm
 
 import config
-import durations
 import estimation
-import visualisation
-import utilities
 
-def get_percentile_transition_estimates(
-    df: pd.DataFrame,
-    eventtype: str,
-    percentile_bins=config.PERCENTILE_THRESHOLDS,
-    n_boot: int = 100,
-    foreach: str = "none",
-) -> pd.DataFrame:
+
+BULK_EXCLUSION_WINDOW_MIN = 30
+LOCAL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+EVENT_META_COLS = ["animal_id", "night_date", "clutch_id", "group_id", "size_class", "sleep_site_type", "wake_site_type", "age", "sex"]
+EVENTTYPES = ("sleep", "wake")
+
+
+# Events split into edge and bulk
+
+def build_edge_events_from_masterdf(masterdf):
+    other_meta = [c for c in EVENT_META_COLS if c not in ("animal_id", "night_date")]
+    night_table = masterdf[["animal_id", "night_date", "t_sleep", "t_wake"] + other_meta].copy()
+    night_table["age_sex"] = night_table["age"].astype(str) + "_" + night_table["sex"].astype(str)
+
+    meta_cols = EVENT_META_COLS + ["age_sex"]
+    sleep_rows = night_table.rename(columns={"t_sleep": "event_time"}).assign(event_type="sleep")
+    wake_rows = night_table.rename(columns={"t_wake": "event_time"}).assign(event_type="wake")
+
+    events = pd.concat([sleep_rows[["event_time", "event_type"] + meta_cols],
+                        wake_rows[["event_time", "event_type"] + meta_cols]], ignore_index=True)
+    return events.dropna(subset=["event_time"]).reset_index(drop=True)
+
+
+def _parse_local_time(series):
+    parsed = pd.to_datetime(series, format=LOCAL_TIME_FORMAT, errors="coerce")
+    bad = parsed.isna() & series.notna()
+    if bad.any():
+        parsed.loc[bad] = pd.to_datetime(series.loc[bad], format="mixed")
+    return parsed
+
+
+def _extract_flips_for_individual(df, animal_id):
+    df = df.copy()
+    df["local_time"] = _parse_local_time(df["local_time"])
+    df = df.sort_values("local_time").reset_index(drop=True)
+
+    state = df["sleep_bouts"].to_numpy()
+    times = df["local_time"].to_numpy()
+    night_dates = pd.to_datetime(df["night_date"]).to_numpy()
+
+    valid = ~pd.isna(state)
+    state, times, night_dates = state[valid], times[valid], night_dates[valid]
+    change_idx = np.where(np.diff(state) != 0)[0] + 1
+
+    return pd.DataFrame({
+        "animal_id": animal_id,
+        "event_time": times[change_idx],
+        "night_date": night_dates[change_idx],
+        "event_type": np.where(state[change_idx] == 1, "sleep", "wake"),
+    })
+
+
+def split_edge_bulk_events(full_events, edge_events, exclusion_window_min=BULK_EXCLUSION_WINDOW_MIN):
+    if full_events.empty:
+        return full_events.copy()
+
+    merged = full_events.merge(
+        edge_events[["animal_id", "night_date", "event_type", "event_time"]]
+            .rename(columns={"event_time": "edge_time"}),
+        on=["animal_id", "night_date", "event_type"], how="left")
+
+    edge_keys = edge_events[["animal_id", "night_date"]].drop_duplicates().assign(has_edge=True)
+    merged = merged.merge(edge_keys, on=["animal_id", "night_date"], how="left")
+    merged["has_edge"] = merged["has_edge"].notna()
+
+    minutes_from_edge = (merged["event_time"] - merged["edge_time"]).abs() / pd.Timedelta(minutes=1)
+    near_edge = minutes_from_edge.le(exclusion_window_min).fillna(False)
+
+    bulk = merged[~near_edge & merged["has_edge"]].drop(columns=["edge_time", "has_edge"])
+    return bulk.reset_index(drop=True)
+
+
+def build_bulk_events(masterdf, edge_events, inactivity_dir=None,
+                      exclusion_window_min=BULK_EXCLUSION_WINDOW_MIN):
+    if inactivity_dir is None:
+        inactivity_dir = os.path.join(config.DATA, "inactivity")
+
+    night_table = masterdf[EVENT_META_COLS].drop_duplicates(["animal_id", "night_date"]).copy()
+    night_table["age_sex"] = night_table["age"].astype(str) + "_" + night_table["sex"].astype(str)
+
+    per_animal = []
+    for animal_id in tqdm(night_table["animal_id"].unique(), desc="animals (bulk)"):
+        path = os.path.join(inactivity_dir, f"{animal_id}.parquet")
+        if not os.path.exists(path):
+            print(f"Missing parquet for {animal_id}, skipped")
+            continue
+        try:
+            per_animal.append(_extract_flips_for_individual(pd.read_parquet(path), animal_id))
+        except KeyError as e:
+            print(f"Skipping {animal_id}: missing column {e} in {path}")
+
+    if not per_animal:
+        return pd.DataFrame()
+
+    full_events = pd.concat(per_animal, ignore_index=True).merge(
+        night_table, on=["animal_id", "night_date"], how="inner")
+
+    return split_edge_bulk_events(full_events, edge_events, exclusion_window_min=exclusion_window_min)
+
+
+def assign_night_third(events_df, time_col="event_time", date_col="night_date"):
+    df = events_df.copy()
+    bounds = df.groupby(date_col)[time_col].agg(["min", "max"])
+    df = df.merge(bounds, on=date_col, how="left")
+
+    span = (df["max"] - df["min"]) / np.timedelta64(1, "s")
+    elapsed = (df[time_col] - df["min"]) / np.timedelta64(1, "s")
+    frac = (elapsed / span.replace(0, np.nan)).clip(0, 1).fillna(0)
+
+    df["night_third"] = pd.cut(frac, bins=[-0.001, 1 / 3, 2 / 3, 1.0],
+                               labels=["early", "mid", "late"]).astype(str)
+    return df.drop(columns=["min", "max"])
+
+
+# Estimation
+
+def get_transition_duration_table(events_df, eventtype, group_col="group_id", date_col="night_date"):
+    if eventtype not in EVENTTYPES:
+        raise ValueError("eventtype must be 'sleep' or 'wake'")
+
+    sub = events_df[events_df["event_type"] == eventtype]
+    sub = sub.dropna(subset=["event_time", date_col, group_col]).copy()
+    if sub.empty:
+        return pd.DataFrame()
+
+    cohort = [date_col, group_col]
+    sub = sub.sort_values(cohort + ["event_time"]).reset_index(drop=True)
+
+    sub["n_total"] = sub.groupby(cohort)["event_time"].transform("size")
+    sub["_rank"] = sub.groupby(cohort)["event_time"].rank(method="dense").astype(int)
+
+    sub = sub[sub.groupby(cohort)["_rank"].transform("max") >= 2].copy()
+    if sub.empty:
+        return pd.DataFrame()
+
+    bucket = sub.groupby(cohort + ["_rank"]).size().rename("_count").reset_index()
+    bucket["_cum_before"] = bucket.groupby(cohort)["_count"].cumsum() - bucket["_count"]
+
+    times = sub.groupby(cohort + ["_rank"])["event_time"].first().reset_index()
+    times = times.sort_values(cohort + ["_rank"])
+    times["interval_dur"] = ((times["event_time"] - times.groupby(cohort)["event_time"].shift(1))
+                             / np.timedelta64(1, "s"))
+
+    meta = bucket.merge(times[cohort + ["_rank", "interval_dur"]], on=cohort + ["_rank"], how="left")
+    sub = sub.merge(meta[cohort + ["_rank", "_cum_before", "interval_dur"]],
+                    on=cohort + ["_rank"], how="left")
+
+    sub = sub[sub["_rank"] > 1].copy()
+    if sub.empty:
+        return pd.DataFrame()
+
+    sub["n_left"] = sub["n_total"] - sub["_cum_before"]
+    sub["proportion_transitioned"] = sub["_cum_before"] / sub["n_total"]
+    sub["eventtype"] = eventtype
+    return sub.drop(columns=["_rank", "_cum_before"]).reset_index(drop=True)
+
+
+EST_COLS = ["label", "eventtype", "percentile_bin", "p_estimate", "p_error",
+            "n_individuals", "n_nights"]
+
+
+def build_duration_tables(events_df, group_col="group_id", date_col="night_date"):
     """
-    From the master dataframe, compute percentile-wise transition probability
-    estimates for one event type.
-
-    Workflow:
-        1. Build the transition-duration table with
-           durations.get_transition_duration_table()
-        2. Estimate percentile-wise probabilities with
-           estimation.estimate_exp_by_percentile_df()
-
-    If foreach != "none", estimates are returned separately for each unique value
-    in that column.
-
-    Args:
-        df (pd.DataFrame): master dataframe
-        eventtype (str): "sleep" or "wake"
-        percentile_bins (list-like): thresholds of percentile bins for estimation
-        n_boot (int): number of bootstrap replicates passed to
-            estimation.estimate_exp_by_percentile_df()
-        foreach (str): either "none", or a column name in df along which estimates
-            should be computed separately
-
-    Returns:
-        pd.DataFrame: final percentile table with columns:
-            - percentile_bin
-            - p_estimate
-            - p_error
-        and, if foreach != "none":
-            - foreach
+    {eventtype: duration table}, built once from the whole cohort.
     """
-    transition_df = durations.get_transition_duration_table(df, eventtype=eventtype)
-
-    if transition_df.empty:
-        cols = ["percentile_bin", "p_estimate", "p_error"]
-        if foreach != "none":
-            cols = [foreach] + cols
-        return pd.DataFrame(columns=cols)
-
-    out = estimation.estimate_exp_by_percentile_df(
-        df=transition_df,
-        percentile_bins=percentile_bins,
-        n_boot=n_boot,
-        foreach=foreach,
-    )
-
-    sort_cols = ["percentile_bin"] if foreach == "none" else [foreach, "percentile_bin"]
-    return out.sort_values(sort_cols).reset_index(drop=True)
+    tables = {}
+    for eventtype in EVENTTYPES:
+        table = get_transition_duration_table(events_df, eventtype,
+                                              group_col=group_col, date_col=date_col)
+        if not table.empty:
+            tables[eventtype] = table
+    return tables
 
 
-def analyse_sleep_wake_asymmetry_by(
-    masterdf: pd.DataFrame,
-    by: str = "none",
-    foreach: str = "none",
-    drop_vals: Sequence = ("Unknown",),
-):
+def compute_estimates(tables, by="none", date_col="night_date", drop_vals=("Unknown",),
+                      percentile_bins=config.PERCENTILE_THRESHOLDS, n_boot=20):
     """
-    Analyses sleep-wake asymmetries by multiple variables. Returns datatable and fig,
-    ax.
-
-    Plotting behaviour:
-        - If by == "none" and foreach == "none":
-            one panel containing both sleep and wake curves
-        - Otherwise:
-            two panels, one for sleep and one for wake, with separate lines for each
-            unique combination of `by` and `foreach`
-
-    Args:
-        masterdf (pd.DataFrame): main input read
-        by (str): column label, something that is constant within a given date-clutch,
-            e.g., group_sleep_site. (default 'none')
-        foreach (str): column label, something that varies within a given date-clutch,
-            e.g., age, or sex
-        drop_vals (Sequence): values of masterdf[by] or masterdf[foreach] that need to
-            be dropped.
-
-    Returns:
-        pd.DataFrame: with columns percentile_bin, p_estimate, p_error, by, foreach,
-            eventtype, and label.
-        plt.Figure
-        plt.Axes or np.ndarray of Axes
+    `by` only decides which rows' durations feed each rate estimate -- the
+    cohort (n_left, percentile_bin) is untouched.
     """
-    mdf = masterdf.copy()
-
-    if by != "none" and by not in mdf.columns:
-        raise ValueError(f"`by` = '{by}' is not a column in masterdf")
-
-    if foreach != "none" and foreach not in mdf.columns:
-        raise ValueError(f"`foreach` = '{foreach}' is not a column in masterdf")
-
-    if by != "none":
-        mdf = mdf[~mdf[by].isin(drop_vals)]
-
-    if foreach != "none":
-        mdf = mdf[~mdf[foreach].isin(drop_vals)]
-
-    result_frames = []
-
-    # Build analysis groups
-    if by == "none" and foreach == "none":
-        groups = [("all", mdf)]
-    elif by != "none" and foreach == "none":
-        groups = [(str(by_val), dfs) for by_val, dfs in mdf.groupby(by)]
-    elif by == "none" and foreach != "none":
-        groups = [(str(foreach_val), dfs) for foreach_val, dfs in mdf.groupby(foreach)]
-    else:
-        groups = [
-            (f"{by_val} | {foreach_val}", dfs)
-            for (by_val, foreach_val), dfs in mdf.groupby([by, foreach])
-        ]
-
-    for label, dfs in groups:
-        for eventtype in ["sleep", "wake"]:
-            res = get_percentile_transition_estimates(
-                dfs,
-                eventtype=eventtype,
-                foreach="none",
-            )
-
-            if res.empty:
+    frames = []
+    for eventtype, table in tables.items():
+        t = table
+        if by != "none":
+            if by not in t.columns:
+                raise ValueError(f"'{by}' is not a column in the events table")
+            t = t[t[by].notna() & ~t[by].isin(drop_vals)]
+            if t.empty:
                 continue
 
-            res = res.copy()
-            res["eventtype"] = eventtype
-            res["label"] = label
+        est = estimation.estimate_exp_by_percentile_df(
+            df=t, percentile_bins=percentile_bins, n_boot=n_boot, foreach=by)
+        if est.empty:
+            continue
 
-            if by != "none":
-                if foreach == "none":
-                    # label here is just the by value
-                    res[by] = label
-                else:
-                    # recover from group subset directly
-                    vals = dfs[by].dropna().unique()
-                    res[by] = vals[0] if len(vals) == 1 else pd.NA
+        est = est.copy()
+        est["eventtype"] = eventtype
+        est["label"] = "all" if by == "none" else est[by].astype(str)
 
-            if foreach != "none":
-                if by == "none":
-                    res[foreach] = label
-                else:
-                    vals = dfs[foreach].dropna().unique()
-                    res[foreach] = vals[0] if len(vals) == 1 else pd.NA
+        if by == "none":
+            est["n_individuals"] = t["animal_id"].nunique()
+            est["n_nights"] = t[date_col].nunique()
+        else:
+            counts = t.groupby(by).agg(n_individuals=("animal_id", "nunique"),
+                                       n_nights=(date_col, "nunique")).reset_index()
+            counts["label"] = counts[by].astype(str)
+            est = est.drop(columns=[by]).merge(counts[["label", "n_individuals", "n_nights"]],
+                                               on="label", how="left")
+        frames.append(est)
 
-            result_frames.append(res)
+    if not frames:
+        return pd.DataFrame(columns=EST_COLS)
+    return pd.concat(frames, ignore_index=True)[EST_COLS]
 
-    out_cols = ["percentile_bin", "p_estimate", "p_error"]
-    if by != "none":
-        out_cols.append(by)
-    if foreach != "none":
-        out_cols.append(foreach)
-    out_cols += ["eventtype", "label"]
 
-    if not result_frames:
-        fig, ax = plt.subplots()
-        return pd.DataFrame(columns=out_cols), fig, ax
+# Plotting
 
-    out = pd.concat(result_frames, ignore_index=True)
+def _counts_text(est, label):
+    """ The plot headings show no. of individuals and no. of nights"""
+    row = est[est["label"] == label]
+    if row.empty:
+        return ""
+    return f"n={int(row['n_individuals'].iloc[0])} individuals, {int(row['n_nights'].iloc[0])} nights"
 
+
+def _line(ax, sub, name, color, linestyle, alpha):
+    sub = sub.sort_values("percentile_bin")
+    ax.plot(sub["percentile_bin"], sub["p_estimate"], marker="o", linewidth=0.7,
+            linestyle=linestyle, alpha=alpha, label=name, color=color)
+    ax.errorbar(sub["percentile_bin"], sub["p_estimate"], yerr=sub["p_error"],
+                fmt="none", capsize=2, linewidth=0.6, color=color, alpha=alpha)
+    ax.set_xlabel("percentile_bin")
+    ax.set_ylabel("p_estimate")
+
+
+def plot_eventtype_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", set_titles=True):
+    """Two panels (sleep | wake); one line per label within each."""
     sns.set_theme(style="whitegrid")
+    fig = None
+    if axes is None:
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharex=True, sharey=True)
 
-    if by == "none" and foreach == "none":
-        fig, ax = plt.subplots(figsize=(6, 4))
+    labels = sorted(est["label"].unique())
+    colors = dict(zip(labels, sns.color_palette(n_colors=max(len(labels), 1))))
 
-        for eventtype in ["sleep", "wake"]:
-            plotdf = (
-                out[out["eventtype"] == eventtype]
-                .sort_values("percentile_bin")
-            )
+    for ax, eventtype in zip(axes, EVENTTYPES):
+        sub = est[est["eventtype"] == eventtype]
+        for label in labels:
+            line_df = sub[sub["label"] == label]
+            if not line_df.empty:
+                _line(ax, line_df, f"{label}{suffix}", colors[label], linestyle, alpha)
+        if set_titles:
+            parts = [f"{lab}: {_counts_text(sub, lab)}" for lab in labels if not sub[sub["label"] == lab].empty]
+            ax.set_title(f"{eventtype}\n" + " | ".join(parts), fontsize=8)
+        ax.legend(fontsize=7, frameon=False)
 
-            sns.lineplot(
-                data=plotdf,
-                x="percentile_bin",
-                y="p_estimate",
-                marker="o",
-                linewidth=0.7,
-                ax=ax,
-                label=eventtype,
-                errorbar=None,
-            )
-
-            ax.errorbar(
-                plotdf["percentile_bin"],
-                plotdf["p_estimate"],
-                yerr=plotdf["p_error"],
-                fmt="none",
-                capsize=2,
-                linewidth=0.6,
-            )
-
-        ax.set_title("sleep and wake")
-        ax.set_xlabel("percentile_bin")
-        ax.set_ylabel("p_estimate")
-        ax.legend(fontsize=8, title_fontsize=9, frameon=False)
+    if fig is not None:
         fig.tight_layout()
-        return out[out_cols], fig, ax
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharex=True, sharey=True)
-    event_axes = {"sleep": axes[0], "wake": axes[1]}
-
-    # stable colors by label
-    labels = list(pd.unique(out["label"]))
-    palette = sns.color_palette(n_colors=max(len(labels), 1))
-    color_map = dict(zip(labels, palette))
-
-    for eventtype in ["sleep", "wake"]:
-        ax = event_axes[eventtype]
-        event_df = out[out["eventtype"] == eventtype]
-
-        for label, subdf in event_df.groupby("label"):
-            plotdf = subdf.sort_values("percentile_bin")
-            color = color_map[label]
-
-            sns.lineplot(
-                data=plotdf,
-                x="percentile_bin",
-                y="p_estimate",
-                marker="o",
-                linewidth=0.7,
-                ax=ax,
-                label=label,
-                color=color,
-                errorbar=None,
-            )
-
-            ax.errorbar(
-                plotdf["percentile_bin"],
-                plotdf["p_estimate"],
-                yerr=plotdf["p_error"],
-                fmt="none",
-                color=color,
-                capsize=2,
-                linewidth=0.6,
-            )
-
-        ax.set_title(eventtype)
-        ax.set_xlabel("percentile_bin")
-        ax.set_ylabel("p_estimate")
-        ax.legend(fontsize=8, title_fontsize=9, frameon=False)
-
-    fig.tight_layout()
-    return out[out_cols], fig, axes
+    return fig, axes
 
 
-if __name__ == "__main__":
-    masterdf = pd.read_parquet(config.MASTER_DATA_SHEET)
-    masterdf.dropna(inplace=True)
+def plot_category_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", set_titles=True):
+    """One panel per label; sleep and wake as two separate lines within each."""
+    sns.set_theme(style="whitegrid")
+    labels = sorted(est["label"].unique())
 
-    analyse_sleep_wake_asymmetry_by(masterdf)
+    fig = None
+    if axes is None:
+        fig, axes = plt.subplots(1, max(len(labels), 1), figsize=(6 * max(len(labels), 1), 4),
+                                 sharey=True, squeeze=False)
+        axes = axes[0]
+
+    colors = dict(zip(EVENTTYPES, sns.color_palette(n_colors=len(EVENTTYPES))))
+
+    for ax, label in zip(axes, labels):
+        sub = est[est["label"] == label]
+        for eventtype in EVENTTYPES:
+            line_df = sub[sub["eventtype"] == eventtype]
+            if not line_df.empty:
+                _line(ax, line_df, f"{eventtype}{suffix}", colors[eventtype], linestyle, alpha)
+        if set_titles:
+            ax.set_title(f"{label}\n{_counts_text(sub, label)}", fontsize=9)
+        ax.legend(fontsize=7, frameon=False)
+
+    if fig is not None:
+        fig.tight_layout()
+    return fig, axes
+

@@ -1,4 +1,4 @@
-# Juee Dhar, 28 August 2026
+# Juee Dhar, 06 Sept 2026
 # Pranav Minasandra, 27 Mar 2026
 
 import os
@@ -16,32 +16,33 @@ sns.set_theme(style="white", palette="husl")
 
 GROUP_COL = "group_id"
 
-# One real group_id (e.g. "Emerald") for a quick test run, or None for everything.
-TEST_GROUP_ID = None
+# One real group_id (e.g. "Emerald") for a quick run, or None for everything.
+TEST_GROUP_ID = "Emerald"
 
 CONTROL = True
 CONTROL_SEED = 42
 
 N_BOOT = 20
 
+Y_SCALE = "logit"  # "p" or "logit" -- applies to all p_estimate plots
+
 OVERALL = True
 BY_DIMENSIONS = ["age", "sex", "age_sex", "size_class", "sleep_site_type", "wake_site_type", "night_third"]
 
 RUN_EDGE = True
-RUN_BULK = True
+RUN_BULK = False
 
-# (tag, dimension) -> y-axis limits, for the weird plots
-YLIMS = {("edge", "age"): (0, 0.005)}
+YLIM = (-15,-4)  # set to (lo, hi) or None to fix the y-axis across all plots
 
 
-def _draw(est, ctrl_est, plot_fn, name, ylim):
-    fig, axes = plot_fn(est)
+def _draw(est, ctrl_est, plot_fn, name):
+    fig, axes = plot_fn(est, y_scale=Y_SCALE)
     if ctrl_est is not None and not ctrl_est.empty:
         plot_fn(ctrl_est, axes=axes, linestyle="--", alpha=0.45,
-                suffix=" (control)", set_titles=False)
-    if ylim is not None:
+                suffix=" (control)", set_titles=False, y_scale=Y_SCALE)
+    if YLIM is not None:
         for ax in axes:
-            ax.set_ylim(*ylim)
+            ax.set_ylim(*YLIM)
     utilities.saveimg(fig, name)
     plt.close(fig)
 
@@ -69,12 +70,11 @@ def run(events_df, control_events, tag, output_dir):
             if not ctrl_est.empty:
                 ctrl_est.to_parquet(os.path.join(output_dir, f"{tag}_{name}_control.parquet"))
 
-        ylim = YLIMS.get((tag, name))
         _draw(est, ctrl_est, analyses.plot_category_panels,
-              f"{tag}_{name}_category_panels", ylim)
+              f"{tag}_{name}_category_panels")
         if by != "none":
             _draw(est, ctrl_est, analyses.plot_eventtype_panels,
-                  f"{tag}_{name}_eventtype_panels", ylim)
+                  f"{tag}_{name}_eventtype_panels")
 
         print(f"{tag}/{name}: done")
 

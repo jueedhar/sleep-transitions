@@ -1,4 +1,4 @@
-# Juee Dhar 25 Aug 2026
+# Juee Dhar 06 Sept 2026
 # Pranav Minasandra March 23, 2026
 
 import os
@@ -238,17 +238,23 @@ def _counts_text(est, label):
     return f"n={int(row['n_individuals'].iloc[0])} individuals, {int(row['n_nights'].iloc[0])} nights"
 
 
-def _line(ax, sub, name, color, linestyle, alpha):
+def _line(ax, sub, name, color, linestyle, alpha, y_scale="p"):
     sub = sub.sort_values("percentile_bin")
-    ax.plot(sub["percentile_bin"], sub["p_estimate"], marker="o", linewidth=0.7,
+    y, yerr, ylabel = sub["p_estimate"], sub["p_error"], "p_estimate"
+    if y_scale == "logit":
+        yerr = yerr / (y * (1 - y))
+        y = np.log(y / (1 - y))
+        ylabel = "logit(p_estimate)"
+    ax.plot(sub["percentile_bin"], y, marker="o", linewidth=0.7,
             linestyle=linestyle, alpha=alpha, label=name, color=color)
-    ax.errorbar(sub["percentile_bin"], sub["p_estimate"], yerr=sub["p_error"],
+    ax.errorbar(sub["percentile_bin"], y, yerr=yerr,
                 fmt="none", capsize=2, linewidth=0.6, color=color, alpha=alpha)
     ax.set_xlabel("percentile_bin")
-    ax.set_ylabel("p_estimate")
+    ax.set_ylabel(ylabel)
 
 
-def plot_eventtype_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", set_titles=True):
+def plot_eventtype_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", set_titles=True,
+                          y_scale="p"):
     """Two panels (sleep | wake); one line per label within each."""
     sns.set_theme(style="whitegrid")
     fig = None
@@ -263,7 +269,7 @@ def plot_eventtype_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", s
         for label in labels:
             line_df = sub[sub["label"] == label]
             if not line_df.empty:
-                _line(ax, line_df, f"{label}{suffix}", colors[label], linestyle, alpha)
+                _line(ax, line_df, f"{label}{suffix}", colors[label], linestyle, alpha, y_scale)
         if set_titles:
             parts = [f"{lab}: {_counts_text(sub, lab)}" for lab in labels if not sub[sub["label"] == lab].empty]
             ax.set_title(f"{eventtype}\n" + " | ".join(parts), fontsize=8)
@@ -274,7 +280,8 @@ def plot_eventtype_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", s
     return fig, axes
 
 
-def plot_category_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", set_titles=True):
+def plot_category_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", set_titles=True,
+                         y_scale="p"):
     """One panel per label; sleep and wake as two separate lines within each."""
     sns.set_theme(style="whitegrid")
     labels = sorted(est["label"].unique())
@@ -292,7 +299,7 @@ def plot_category_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", se
         for eventtype in EVENTTYPES:
             line_df = sub[sub["eventtype"] == eventtype]
             if not line_df.empty:
-                _line(ax, line_df, f"{eventtype}{suffix}", colors[eventtype], linestyle, alpha)
+                _line(ax, line_df, f"{eventtype}{suffix}", colors[eventtype], linestyle, alpha, y_scale)
         if set_titles:
             ax.set_title(f"{label}\n{_counts_text(sub, label)}", fontsize=9)
         ax.legend(fontsize=7, frameon=False)

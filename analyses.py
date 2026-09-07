@@ -1,4 +1,4 @@
-# Juee Dhar 06 Sept 2026
+# Juee Dhar 07 Sept 2026
 # Pranav Minasandra March 23, 2026
 
 import os
@@ -10,14 +10,15 @@ import seaborn as sns
 from tqdm.auto import tqdm
 
 import config
+import durations
 import estimation
 
 
 BULK_EXCLUSION_WINDOW_MIN = 30
 LOCAL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-EVENT_META_COLS = ["animal_id", "night_date", "clutch_id", "group_id", "size_class", "sleep_site_type", "wake_site_type", "age", "sex"]
-EVENTTYPES = ("sleep", "wake")
+EVENT_META_COLS = ["animal_id", "night_date", "clutch_id", "group_id", "size_class", "coverage_class", "sleep_site_type", "wake_site_type", "age", "sex"]
+EVENTTYPES = durations.EVENTTYPES
 
 
 # Events split into edge and bulk
@@ -25,7 +26,8 @@ EVENTTYPES = ("sleep", "wake")
 def build_edge_events_from_masterdf(masterdf):
     other_meta = [c for c in EVENT_META_COLS if c not in ("animal_id", "night_date")]
     night_table = masterdf[["animal_id", "night_date", "t_sleep", "t_wake"] + other_meta].copy()
-    night_table["age_sex"] = night_table["age"].astype(str) + "_" + night_table["sex"].astype(str)
+    night_table["age_sex"] = np.where(night_table["age"].isna() | night_table["sex"].isna(), np.nan,
+                                      night_table["age"].astype(str) + "_" + night_table["sex"].astype(str))
 
     meta_cols = EVENT_META_COLS + ["age_sex"]
     sleep_rows = night_table.rename(columns={"t_sleep": "event_time"}).assign(event_type="sleep")
@@ -91,7 +93,8 @@ def build_bulk_events(masterdf, edge_events, inactivity_dir=None,
         inactivity_dir = os.path.join(config.DATA, "inactivity")
 
     night_table = masterdf[EVENT_META_COLS].drop_duplicates(["animal_id", "night_date"]).copy()
-    night_table["age_sex"] = night_table["age"].astype(str) + "_" + night_table["sex"].astype(str)
+    night_table["age_sex"] = np.where(night_table["age"].isna() | night_table["sex"].isna(), np.nan,
+                                      night_table["age"].astype(str) + "_" + night_table["sex"].astype(str))
 
     per_animal = []
     for animal_id in tqdm(night_table["animal_id"].unique(), desc="animals (bulk)"):
@@ -129,66 +132,28 @@ def assign_night_third(events_df, time_col="event_time", date_col="night_date"):
 
 # Estimation
 
-def get_transition_duration_table(events_df, eventtype, group_col="group_id", date_col="night_date"):
-    if eventtype not in EVENTTYPES:
-        raise ValueError("eventtype must be 'sleep' or 'wake'")
-
-    sub = events_df[events_df["event_type"] == eventtype]
-    sub = sub.dropna(subset=["event_time", date_col, group_col]).copy()
-    if sub.empty:
-        return pd.DataFrame()
-
-    cohort = [date_col, group_col]
-    sub = sub.sort_values(cohort + ["event_time"]).reset_index(drop=True)
-
-    sub["n_total"] = sub.groupby(cohort)["event_time"].transform("size")
-    sub["_rank"] = sub.groupby(cohort)["event_time"].rank(method="dense").astype(int)
-
-    sub = sub[sub.groupby(cohort)["_rank"].transform("max") >= 2].copy()
-    if sub.empty:
-        return pd.DataFrame()
-
-    bucket = sub.groupby(cohort + ["_rank"]).size().rename("_count").reset_index()
-    bucket["_cum_before"] = bucket.groupby(cohort)["_count"].cumsum() - bucket["_count"]
-
-    times = sub.groupby(cohort + ["_rank"])["event_time"].first().reset_index()
-    times = times.sort_values(cohort + ["_rank"])
-    times["interval_dur"] = ((times["event_time"] - times.groupby(cohort)["event_time"].shift(1))
-                             / np.timedelta64(1, "s"))
-
-    meta = bucket.merge(times[cohort + ["_rank", "interval_dur"]], on=cohort + ["_rank"], how="left")
-    sub = sub.merge(meta[cohort + ["_rank", "_cum_before", "interval_dur"]],
-                    on=cohort + ["_rank"], how="left")
-
-    sub = sub[sub["_rank"] > 1].copy()
-    if sub.empty:
-        return pd.DataFrame()
-
-    sub["n_left"] = sub["n_total"] - sub["_cum_before"]
-    sub["proportion_transitioned"] = sub["_cum_before"] / sub["n_total"]
-    sub["eventtype"] = eventtype
-    return sub.drop(columns=["_rank", "_cum_before"]).reset_index(drop=True)
-
-
 EST_COLS = ["label", "eventtype", "percentile_bin", "p_estimate", "p_error",
             "n_individuals", "n_nights"]
 
 
-def build_duration_tables(events_df, group_col="group_id", date_col="night_date"):
+def build_duration_tables(events_df, kind="edge", group_col="clutch_id", date_col="night_date"):
     """
     {eventtype: duration table}, built once from the whole cohort.
+    `kind` selects the at-risk model: "edge" (monotonic pool) or "bulk"
+    (per-animal state tracking, both eventtypes in one simulation pass).
     """
-    tables = {}
-    for eventtype in EVENTTYPES:
-        table = get_transition_duration_table(events_df, eventtype,
-                                              group_col=group_col, date_col=date_col)
-        if not table.empty:
-            tables[eventtype] = table
-    return tables
+    if kind == "bulk":
+        tables = durations.get_transition_duration_tables_bulk(
+            events_df, group_col=group_col, date_col=date_col)
+    else:
+        tables = {eventtype: durations.get_transition_duration_table_edge(
+                       events_df, eventtype, group_col=group_col, date_col=date_col)
+                   for eventtype in EVENTTYPES}
+    return {eventtype: table for eventtype, table in tables.items() if not table.empty}
 
 
 def compute_estimates(tables, by="none", date_col="night_date", drop_vals=("Unknown",),
-                      percentile_bins=config.PERCENTILE_THRESHOLDS, n_boot=20):
+                      percentile_bins=config.PERCENTILE_THRESHOLDS, n_boot=10):
     """
     `by` only decides which rows' durations feed each rate estimate -- the
     cohort (n_left, percentile_bin) is untouched.
@@ -255,7 +220,7 @@ def _line(ax, sub, name, color, linestyle, alpha, y_scale="p"):
 
 def plot_eventtype_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", set_titles=True,
                           y_scale="p"):
-    """Two panels (sleep | wake); one line per label within each."""
+    """Two panels (sleep und wake); one line per label within each."""
     sns.set_theme(style="whitegrid")
     fig = None
     if axes is None:

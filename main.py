@@ -1,4 +1,4 @@
-# Juee Dhar, 06 Sept 2026
+# Juee Dhar, 07 Sept 2026
 # Pranav Minasandra, 27 Mar 2026
 
 import os
@@ -17,22 +17,22 @@ sns.set_theme(style="white", palette="husl")
 GROUP_COL = "group_id"
 
 # One real group_id (e.g. "Emerald") for a quick run, or None for everything.
-TEST_GROUP_ID = "Emerald"
+TEST_GROUP_ID = None
 
 CONTROL = True
 CONTROL_SEED = 42
 
-N_BOOT = 20
+N_BOOT = 10
 
-Y_SCALE = "logit"  # "p" or "logit" -- applies to all p_estimate plots
+Y_SCALE = "p"  # "p" or "logit" -- applies to all p_estimate plots
 
 OVERALL = True
-BY_DIMENSIONS = ["age", "sex", "age_sex", "size_class", "sleep_site_type", "wake_site_type", "night_third"]
+BY_DIMENSIONS = ["age", "sex", "age_sex", "size_class", "coverage_class", "sleep_site_type", "wake_site_type", "night_third"]
 
 RUN_EDGE = True
-RUN_BULK = False
+RUN_BULK = True
 
-YLIM = (-15,-4)  # set to (lo, hi) or None to fix the y-axis across all plots
+YLIM =  None # set to (lo, hi) (-10,-6) or None to fix the y-axis across all plots
 
 
 def _draw(est, ctrl_est, plot_fn, name):
@@ -49,8 +49,8 @@ def _draw(est, ctrl_est, plot_fn, name):
 
 def run(events_df, control_events, tag, output_dir):
     # Built once per tag, then reused by every dimension below.
-    tables = analyses.build_duration_tables(events_df, group_col=GROUP_COL)
-    ctrl_tables = (analyses.build_duration_tables(control_events, group_col=GROUP_COL)
+    tables = analyses.build_duration_tables(events_df, kind=tag)
+    ctrl_tables = (analyses.build_duration_tables(control_events, kind=tag)
                    if control_events is not None else None)
 
     jobs = [("overall", "none")] if OVERALL else []

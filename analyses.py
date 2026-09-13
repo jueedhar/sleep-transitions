@@ -23,6 +23,7 @@ EVENTTYPES = durations.EVENTTYPES
 
 # Events split into edge and bulk
 
+# One row per animal-night edge event (sleep, wake), long format with metadata.
 def build_edge_events_from_masterdf(masterdf):
     other_meta = [c for c in EVENT_META_COLS if c not in ("animal_id", "night_date")]
     night_table = masterdf[["animal_id", "night_date", "t_sleep", "t_wake"] + other_meta].copy()
@@ -38,6 +39,7 @@ def build_edge_events_from_masterdf(masterdf):
     return events.dropna(subset=["event_time"]).reset_index(drop=True)
 
 
+# Parses local_time strings to datetime, falling back to mixed format on mismatches.
 def _parse_local_time(series):
     parsed = pd.to_datetime(series, format=LOCAL_TIME_FORMAT, errors="coerce")
     bad = parsed.isna() & series.notna()
@@ -46,6 +48,7 @@ def _parse_local_time(series):
     return parsed
 
 
+# One row per state flip (sleep_bouts change) for one animal, across all its nights.
 def _extract_flips_for_individual(df, animal_id):
     df = df.copy()
     df["local_time"] = _parse_local_time(df["local_time"])
@@ -67,6 +70,7 @@ def _extract_flips_for_individual(df, animal_id):
     })
 
 
+# Keeps only flip events >= exclusion_window_min from their same-type edge event (the "bulk" subset).
 def split_edge_bulk_events(full_events, edge_events, exclusion_window_min=BULK_EXCLUSION_WINDOW_MIN):
     if full_events.empty:
         return full_events.copy()
@@ -87,6 +91,7 @@ def split_edge_bulk_events(full_events, edge_events, exclusion_window_min=BULK_E
     return bulk.reset_index(drop=True)
 
 
+# Reads each animal's inactivity parquet, extracts flips, and returns the bulk 
 def build_bulk_events(masterdf, edge_events, inactivity_dir=None,
                       exclusion_window_min=BULK_EXCLUSION_WINDOW_MIN):
     if inactivity_dir is None:
@@ -116,6 +121,7 @@ def build_bulk_events(masterdf, edge_events, inactivity_dir=None,
     return split_edge_bulk_events(full_events, edge_events, exclusion_window_min=exclusion_window_min)
 
 
+# Labels each event early/mid/late by its fractional position within that night's span.
 def assign_night_third(events_df, time_col="event_time", date_col="night_date"):
     df = events_df.copy()
     bounds = df.groupby(date_col)[time_col].agg(["min", "max"])
@@ -153,10 +159,11 @@ def build_duration_tables(events_df, kind="edge", group_col="clutch_id", date_co
 
 
 def compute_estimates(tables, by="none", date_col="night_date", drop_vals=("Unknown",),
-                      percentile_bins=config.PERCENTILE_THRESHOLDS, n_boot=10):
+                      percentile_bins=config.PERCENTILE_THRESHOLDS, n_boot=20):
     """
-    `by` only decides which rows' durations feed each rate estimate -- the
-    cohort (n_left, percentile_bin) is untouched.
+    Rate estimates (p_estimate, p_error) per eventtype x percentile_bin, one
+    row per label. `by` only decides which rows' durations feed each rate
+    estimate -- the cohort (n_left, percentile_bin) is untouched.
     """
     frames = []
     for eventtype, table in tables.items():

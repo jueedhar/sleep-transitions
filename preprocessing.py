@@ -21,10 +21,18 @@ def mask_and_filter(masterdf,
                                      tst_threshold=TST_THRESHOLD,
                                      min_individuals_per_clutch=MIN_INDIVIDUALS_PER_CLUTCH):
     """
-    Returns masterdf with the 'disturbance_status' column, filtered to
-    only the clutch-nights that pass the individual-count minimum.
+    Returns masterdf with the 'disturbance_status' column, filtered to only
+    the clutch-nights that pass the individual-count minimum and have both
+    a sleep and a wake edge time.
     """
     masterdf = masterdf.rename(columns={"ind": "animal_id", "date": "night_date"})
+
+    has_both_edges = masterdf["t_sleep"].notna() & masterdf["t_wake"].notna()
+    n_dropped_edges = (~has_both_edges).sum()
+    if n_dropped_edges:
+        print(f"mask_and_filter: dropping {n_dropped_edges} row(s) missing a "
+              f"sleep or wake edge time")
+    masterdf = masterdf[has_both_edges].reset_index(drop=True)
 
     tst_df = pd.read_csv(tst_csv_path)[["tag", "night_date", "TST"]]
     tst_df = tst_df.rename(columns={"tag": "animal_id"})
@@ -69,7 +77,8 @@ def load_regular_data(status=LOAD_STATUS,
     )
     masterdf = masterdf[masterdf["disturbance_status"] == status].reset_index(drop=True)
     print(f"load_regular_data: {masterdf['animal_id'].nunique()} animals, "
-          f"{masterdf['night_date'].nunique()} nights remaining with status == '{status}'")
+          f"{masterdf['night_date'].nunique()} nights, {len(masterdf)} animal-nights "
+          f"remaining with status == '{status}'")
     return masterdf
 
 

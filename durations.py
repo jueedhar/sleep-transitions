@@ -20,11 +20,22 @@ _COMPLEMENT = {"sleep": "wake", "wake": "sleep"}
 
 def get_intervals(events: np.ndarray) -> np.ndarray:
     """
-    Inter-event intervals, sorted earliest to latest. Simultaneous events
-    repeat the interval from the last non-simultaneous event.
+    Given event times within a day (in seconds, 0 <= t < 86400), return the
+    consecutive inter-event intervals after ordering events from earliest to latest.
 
+    If multiple events are simultaneous, they are treated as occurring at the same
+    transition point. The interval from the previous non-simultaneous event is
+    repeated for each simultaneous event.
+
+    Example:
         [6010, 6023, 6023] -> [13, 13]
         [10, 20, 20, 35]   -> [10, 10, 15]
+
+    Args:
+        events (np.ndarray): 1D array of event times.
+
+    Returns:
+        np.ndarray: consecutive inter-event intervals between non-simultaneous events.
     """
     events = np.asarray(events)
 
@@ -50,8 +61,31 @@ def get_intervals(events: np.ndarray) -> np.ndarray:
 
 def get_transition_duration_table_edge(events_df, eventtype, group_col="clutch_id", date_col="night_date"):
     """
-    Edge events: each animal transitions into `eventtype` once per cohort-night,
-    so the at-risk pool (n_left) depletes monotonically.
+    Loops across dates, and within each date across clutch_ids, and returns a table
+    of inter-event durations for sleep or wake events.
+
+    Each output row corresponds to a specific individual transition, not just an
+    abstract repeated interval. If multiple individuals transition simultaneously at
+    the later timestamp, one row is emitted per transitioning individual, each carrying
+    that individual's metadata.
+
+    For each interval row:
+        - interval_dur: time until the focal transition
+        - n_total: total number of observed individuals in that date × clutch subset
+        - n_left: number of individuals still not transitioned during that interval
+        - proportion_transitioned: proportion already transitioned during that
+          interval, i.e. before the focal transition
+
+    The first transition timestamp in each date × clutch subset is skipped, as there
+    is no preceding inter-event duration to assign to it.
+
+    Args:
+        df (pd.DataFrame): master data frame with all sleep/wake data
+        eventtype (str): "sleep" or "wake"
+
+    Returns:
+        pd.DataFrame: with columns 'interval_dur', 'n_total', 'n_left',
+        'proportion_transitioned', and all original columns from the master dataframe.
     """
     if eventtype not in EVENTTYPES:
         raise ValueError("eventtype must be 'sleep' or 'wake'")
@@ -62,53 +96,78 @@ def get_transition_duration_table_edge(events_df, eventtype, group_col="clutch_i
         return pd.DataFrame()
 
     cohort = [date_col, group_col]
-    sub = sub.sort_values(cohort + ["event_time"]).reset_index(drop=True)
+    rows = []
 
-    sub["n_total"] = sub.groupby(cohort)["event_time"].transform("size")
-    sub["_rank"] = sub.groupby(cohort)["event_time"].rank(method="dense").astype(int)
+    for _, subdf in sub.groupby(cohort):
+        subdf_event = subdf.sort_values("event_time")
 
-    sub = sub[sub.groupby(cohort)["_rank"].transform("max") >= 2].copy()
-    if sub.empty:
-        return pd.DataFrame()
+        times = subdf_event["event_time"].to_numpy()
+        unique_times, counts = np.unique(times, return_counts=True)
 
-    bucket = sub.groupby(cohort + ["_rank"]).size().rename("_count").reset_index()
-    bucket["_cum_before"] = bucket.groupby(cohort)["_count"].cumsum() - bucket["_count"]
+        if len(unique_times) < 2:
+            continue
 
-    times = sub.groupby(cohort + ["_rank"])["event_time"].first().reset_index()
-    times = times.sort_values(cohort + ["_rank"])
-    times["interval_dur"] = ((times["event_time"] - times.groupby(cohort)["event_time"].shift(1))
-                             / np.timedelta64(1, "s"))
+        diffs = np.diff(unique_times)
+        if np.issubdtype(diffs.dtype, np.timedelta64):
+            diffs = diffs / np.timedelta64(1, "s")
 
-    meta = bucket.merge(times[cohort + ["_rank", "interval_dur"]], on=cohort + ["_rank"], how="left")
-    sub = sub.merge(meta[cohort + ["_rank", "_cum_before", "interval_dur"]],
-                    on=cohort + ["_rank"], how="left")
+        n_total = len(subdf_event)
+        transitioned_so_far = counts[0]
 
-    sub = sub[sub["_rank"] > 1].copy()
-    if sub.empty:
-        return pd.DataFrame()
+        for prev_time, this_time, diff, later_count in zip(
+            unique_times[:-1], unique_times[1:], diffs, counts[1:]
+        ):
+            n_left = n_total - transitioned_so_far
+            proportion_transitioned = transitioned_so_far / n_total
 
-    sub["n_left"] = sub["n_total"] - sub["_cum_before"]
-    sub["proportion_transitioned"] = sub["_cum_before"] / sub["n_total"]
-    sub["eventtype"] = eventtype
-    return sub.drop(columns=["_rank", "_cum_before"]).reset_index(drop=True)
+            transitioners = subdf_event[subdf_event["event_time"] == this_time]
+
+            # Safety check: this should match later_count from np.unique
+            if len(transitioners) != later_count:
+                raise RuntimeError(
+                    "Mismatch between unique-count calculation and transitioning rows"
+                )
+
+            for _, ind_row in transitioners.iterrows():
+                row = ind_row.to_dict()
+                row.update(
+                    {
+                        "interval_dur": float(diff),
+                        "n_total": n_total,
+                        "n_left": n_left,
+                        "proportion_transitioned": proportion_transitioned,
+                        "eventtype": eventtype,
+                    }
+                )
+                rows.append(row)
+
+            transitioned_so_far += later_count
+
+    return pd.DataFrame(rows)
 
 
 def get_transition_duration_tables_bulk(events_df, group_col="clutch_id", date_col="night_date"):
     """
     Bulk (in-night) events, both eventtypes in one per-animal state pass.
-    Animals transition repeatedly, so the at-risk pool (n_left, aka M_r) is
-    the live count of tracked animals in the complementary state, not a
-    monotonically shrinking pool. Each animal starts being tracked at its
-    first event, seeded to that event's complement state.
+    Animals transition repeatedly, so the at-risk pool for `eventtype`
+    (n_risk, aka M_r) is the live count of tracked animals in the
+    complementary state, not a monotonically shrinking pool. Each animal
+    starts being tracked at its own first event that night, seeded to that
+    event's complement state -- entry and exit are both just "the count":
+    an animal simply stops contributing once its own bulk stream (already
+    restricted to BULK_EXCLUSION_WINDOW_MIN minutes from its own edges,
+    upstream in analyses.split_edge_bulk_events) runs out, no separate
+    censoring needed.
 
-    Same-timestamp events are batched, as in get_transition_duration_table_edge,
-    so interval_dur is always a gap between distinct times. Sleep/wake edge
-    exclusion is independent per type, so a retained event can repeat an
-    animal's known state (the opposite-type flip between them got excluded);
-    such repeats aren't real transitions and are dropped.
+    Same-timestamp events are batched, so interval_dur is always a gap
+    between distinct times. Sleep/wake edge exclusion is independent per
+    type, so a retained event can repeat an animal's known state (the
+    opposite-type flip between them got excluded); such repeats aren't real
+    transitions and are dropped.
 
     Returns:
-        {"sleep": table, "wake": table}
+        {"sleep": table, "wake": table}. n_risk is stored under the column
+        name n_left, for parity with get_transition_duration_table_edge.
     """
     df = events_df.dropna(subset=["event_time", date_col, group_col, "animal_id", "event_type"]).copy()
     if df.empty:
@@ -119,34 +178,51 @@ def get_transition_duration_tables_bulk(events_df, group_col="clutch_id", date_c
 
     rows = {eventtype: [] for eventtype in EVENTTYPES}
     for _, cohort_df in tqdm(df.groupby(cohort, sort=False), desc="bulk duration tables"):
+        records = cohort_df.to_dict("records")
+
         state = {}
         occupancy = {"sleep": 0, "wake": 0}
         prev_time = {"sleep": None, "wake": None}
 
-        for event_time, batch in cohort_df.groupby("event_time", sort=False):
-            for animal, etype in zip(batch["animal_id"], batch["event_type"]):
+        i, n = 0, len(records)
+        while i < n:
+            event_time = records[i]["event_time"]
+            j = i
+            while j < n and records[j]["event_time"] == event_time:
+                j += 1
+            batch = records[i:j]
+            i = j
+
+            for rec in batch:
+                animal, etype = rec["animal_id"], rec["event_type"]
                 if animal not in state:
                     prior = _COMPLEMENT[etype]
                     state[animal] = prior
                     occupancy[prior] += 1
 
-            genuine_mask = [state[a] != e for a, e in zip(batch["animal_id"], batch["event_type"])]
-            genuine = batch[genuine_mask]
+            genuine = [rec for rec in batch if state[rec["animal_id"]] != rec["event_type"]]
 
             n_total = len(state)
             for eventtype in EVENTTYPES:
-                transitioners = genuine[genuine["event_type"] == eventtype]
-                if transitioners.empty:
+                transitioners = [rec for rec in genuine if rec["event_type"] == eventtype]
+                if not transitioners:
                     continue
                 if prev_time[eventtype] is not None:
-                    n_left = occupancy[_COMPLEMENT[eventtype]]
-                    proportion_transitioned = occupancy[eventtype] / n_total
+                    n_risk = occupancy[_COMPLEMENT[eventtype]]
+
+                    if len(transitioners) > n_risk:
+                        raise RuntimeError(
+                            f"More transitions than animals occupying that state before the wave "
+                            f"({eventtype}, {n_risk=}, transitioners={len(transitioners)})"
+                        )
+
+                    proportion_transitioned = len(transitioners) / n_risk
                     interval_dur = (event_time - prev_time[eventtype]) / np.timedelta64(1, "s")
-                    for _, row in transitioners.iterrows():
-                        row_out = row.to_dict()
+                    for rec in transitioners:
+                        row_out = dict(rec)
                         row_out.update({
                             "n_total": n_total,
-                            "n_left": n_left,
+                            "n_left": n_risk,
                             "proportion_transitioned": proportion_transitioned,
                             "interval_dur": interval_dur,
                             "eventtype": eventtype,
@@ -154,7 +230,8 @@ def get_transition_duration_tables_bulk(events_df, group_col="clutch_id", date_c
                         rows[eventtype].append(row_out)
                 prev_time[eventtype] = event_time
 
-            for animal, etype in zip(genuine["animal_id"], genuine["event_type"]):
+            for rec in genuine:
+                animal, etype = rec["animal_id"], rec["event_type"]
                 occupancy[state[animal]] -= 1
                 state[animal] = etype
                 occupancy[etype] += 1

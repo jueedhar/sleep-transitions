@@ -42,7 +42,7 @@ def make_date_map(events_df, seed=None, derange=True):
 
 def apply_date_map(events_df, date_map):
     """
-    event_time is shifted by the same number of days, so the time of night is kept exactly and only the 
+    event_time is shifted by the same number of days, so the time of night is kept exactly and only the
     date changes.
     """
     df = events_df.merge(date_map, on=["animal_id", "night_date"], how="left")
@@ -51,3 +51,18 @@ def apply_date_map(events_df, date_map):
     df["event_time"] = df["event_time"] + (df["new_night_date"] - df["night_date"])
     df["night_date"] = df["new_night_date"]
     return df.drop(columns=["new_night_date"]).reset_index(drop=True)
+
+
+def filter_min_clutch_size(events_df, min_individuals, group_col="clutch_id", date_col="night_date"):
+    """
+    Drops (date_col, group_col) cohorts that end up with fewer than
+    min_individuals distinct animals after shuffling -- each animal's date
+    permutation is independent, so a cohort that met the minimum before
+    shuffling isn't guaranteed to afterwards.
+    """
+    sizes = events_df.groupby([date_col, group_col])["animal_id"].transform("nunique")
+    n_dropped = (sizes < min_individuals).sum()
+    if n_dropped:
+        print(f"filter_min_clutch_size: dropping {n_dropped} row(s) from shuffled "
+              f"cohorts with fewer than {min_individuals} individuals")
+    return events_df[sizes >= min_individuals].reset_index(drop=True)

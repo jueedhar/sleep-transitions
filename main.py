@@ -14,15 +14,14 @@ import utilities
 
 sns.set_theme(style="white", palette="husl")
 
+# One real group_id (e.g. "Emerald") for a quick run, or None for all groups together.
 GROUP_COL = "group_id"
-
-# One real group_id (e.g. "Emerald") for a quick run, or None for everything.
 TEST_GROUP_ID = None
 
 CONTROL = True
 CONTROL_SEED = 42
 
-N_BOOT = 10
+N_BOOT = 100 #no. of bootstrap resamples used to estimate the std error of each rate estimate
 
 Y_SCALE = "p"  # "p" or "logit" -- applies to all p_estimate plots
 
@@ -32,7 +31,7 @@ BY_DIMENSIONS = ["age", "sex", "age_sex", "size_class", "coverage_class", "sleep
 RUN_EDGE = True
 RUN_BULK = True
 
-YLIM =  None # set to (lo, hi) (-10,-6) or None to fix the y-axis across all plots
+YLIM =  None # set to (lo, hi) (-10,-6) (0, 0.002) or None to fix the y-axis across all plots
 
 
 def _draw(est, ctrl_est, plot_fn, name):
@@ -97,6 +96,9 @@ if __name__ == "__main__":
 
     if RUN_EDGE:
         control_events = control_sims.apply_date_map(edge_events, date_map) if CONTROL else None
+        if control_events is not None:
+            control_events = control_sims.filter_min_clutch_size(
+                control_events, preprocessing.MIN_INDIVIDUALS_PER_CLUTCH)
         run(edge_events, control_events, "edge", output_dir)
         del control_events
 
@@ -104,4 +106,7 @@ if __name__ == "__main__":
         bulk_events = analyses.assign_night_third(
             analyses.build_bulk_events(masterdf, edge_events))
         control_events = control_sims.apply_date_map(bulk_events, date_map) if CONTROL else None
+        if control_events is not None:
+            control_events = control_sims.filter_min_clutch_size(
+                control_events, preprocessing.MIN_INDIVIDUALS_PER_CLUTCH)
         run(bulk_events, control_events, "bulk", output_dir)

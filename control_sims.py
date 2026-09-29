@@ -21,7 +21,7 @@ def _derange(dates, rng):
 
 def make_date_map(events_df, seed=None, derange=True):
     """
-    For each animal, shuffle its own night_dates among themselves -- a bijection,
+    For each animal, shuffle its own night_dates among themselves - a bijection,
     so no date is repeated, lost or invented. derange=True forbids a night keeping its own date.
     
     Returns (animal_id, night_date, new_night_date).

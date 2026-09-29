@@ -16,6 +16,7 @@ import estimation
 
 BULK_EXCLUSION_WINDOW_MIN = 30
 LOCAL_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+LOCAL_TZ = "Africa/Nairobi"  # fixed UTC+3, no DST
 
 EVENT_META_COLS = ["animal_id", "night_date", "clutch_id", "group_id", "size_class", "coverage_class", "sleep_site_type", "wake_site_type", "age", "sex"]
 EVENTTYPES = durations.EVENTTYPES
@@ -51,7 +52,13 @@ def _parse_local_time(series):
 # One row per state flip (sleep_bouts change) for one animal, across all its nights.
 def _extract_flips_for_individual(df, animal_id):
     df = df.copy()
-    df["local_time"] = _parse_local_time(df["local_time"])
+    # raw parquet's `local_time` is a bare time-of-day string with no date; parsing it via
+    # _parse_local_time silently defaulted the missing date to today's date, so every bulk
+    # event_time landed on whatever day the script ran rather than its real date (debugged
+    # 23 Sept 2026). `timestamp` is tz-aware UTC and carries the correct date, so derive local
+    # time from that instead. This feeds get_transition_duration_tables_bulk in durations.py,
+    # via build_bulk_events -> split_edge_bulk_events below.
+    df["local_time"] = df["timestamp"].dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
     df = df.sort_values("local_time").reset_index(drop=True)
 
     state = df["sleep_bouts"].to_numpy()
@@ -70,8 +77,14 @@ def _extract_flips_for_individual(df, animal_id):
     })
 
 
-# Keeps only flip events >= exclusion_window_min from their same-type edge event (the "bulk" subset).
-def split_edge_bulk_events(full_events, edge_events, exclusion_window_min=BULK_EXCLUSION_WINDOW_MIN):
+# Keeps only flip events >= exclusion_window_min from their same-type edge event, and further
+# restricts to the clutch-night's core-sleep window: after the last individual's sleep onset and
+# before the first individual's wake, i.e. the span where every tracked animal is asleep. Outside
+# that window a "bulk" event is daytime/pre-sleep/post-wake leakage, not a real in-night
+# transition (this used to be unenforced -- diagnose_bulk_window.py measured ~24% leakage on
+# clutch 18 before this was added).
+def split_edge_bulk_events(full_events, edge_events, group_col="clutch_id", date_col="night_date",
+                           exclusion_window_min=BULK_EXCLUSION_WINDOW_MIN):
     if full_events.empty:
         return full_events.copy()
 
@@ -88,7 +101,17 @@ def split_edge_bulk_events(full_events, edge_events, exclusion_window_min=BULK_E
     near_edge = minutes_from_edge.le(exclusion_window_min).fillna(False)
 
     bulk = merged[~near_edge & merged["has_edge"]].drop(columns=["edge_time", "has_edge"])
-    return bulk.reset_index(drop=True)
+
+    cohort = [date_col, group_col]
+    onsets = edge_events[edge_events["event_type"] == "sleep"]
+    offsets = edge_events[edge_events["event_type"] == "wake"]
+    window = onsets.groupby(cohort)["event_time"].max().rename("t_start").reset_index()
+    window = window.merge(offsets.groupby(cohort)["event_time"].min().rename("t_end").reset_index(), on=cohort)
+    window = window[window["t_end"] > window["t_start"]]
+
+    bulk = bulk.merge(window, on=cohort, how="inner")
+    bulk = bulk[(bulk["event_time"] >= bulk["t_start"]) & (bulk["event_time"] < bulk["t_end"])]
+    return bulk.drop(columns=["t_start", "t_end"]).reset_index(drop=True)
 
 
 # Reads each animal's inactivity parquet, extracts flips, and returns the bulk 
@@ -121,11 +144,11 @@ def build_bulk_events(masterdf, edge_events, inactivity_dir=None,
     return split_edge_bulk_events(full_events, edge_events, exclusion_window_min=exclusion_window_min)
 
 
-# Labels each event early/mid/late by its fractional position within that night's span.
-def assign_night_third(events_df, time_col="event_time", date_col="night_date"):
+# Labels each event early/mid/late by its fractional position within that clutch-night's span.
+def assign_night_third(events_df, time_col="event_time", date_col="night_date", clutch_col="clutch_id"):
     df = events_df.copy()
-    bounds = df.groupby(date_col)[time_col].agg(["min", "max"])
-    df = df.merge(bounds, on=date_col, how="left")
+    bounds = df.groupby([date_col, clutch_col])[time_col].agg(["min", "max"])
+    df = df.merge(bounds, on=[date_col, clutch_col], how="left")
 
     span = (df["max"] - df["min"]) / np.timedelta64(1, "s")
     elapsed = (df[time_col] - df["min"]) / np.timedelta64(1, "s")
@@ -139,7 +162,7 @@ def assign_night_third(events_df, time_col="event_time", date_col="night_date"):
 # Estimation
 
 EST_COLS = ["label", "eventtype", "percentile_bin", "p_estimate", "p_error",
-            "n_individuals", "n_nights"]
+            "n_individuals", "n_clutch_nights"]
 
 
 def build_duration_tables(events_df, kind="edge", group_col="clutch_id", date_col="night_date"):
@@ -158,12 +181,17 @@ def build_duration_tables(events_df, kind="edge", group_col="clutch_id", date_co
     return {eventtype: table for eventtype, table in tables.items() if not table.empty}
 
 
-def compute_estimates(tables, by="none", date_col="night_date", drop_vals=("Unknown",),
-                      percentile_bins=config.PERCENTILE_THRESHOLDS, n_boot=20):
+def compute_estimates(tables, by="none", date_col="night_date", group_col="clutch_id",
+                      drop_vals=("Unknown",), percentile_bins=config.PERCENTILE_THRESHOLDS,
+                      n_boot=20):
     """
     Rate estimates (p_estimate, p_error) per eventtype x percentile_bin, one
     row per label. `by` only decides which rows' durations feed each rate
     estimate -- the cohort (n_left, percentile_bin) is untouched.
+
+    n_clutch_nights counts distinct (date_col, group_col) pairs surviving in
+    `t` -- the unique clutch-nights, not just distinct dates (different
+    clutches on the same calendar date are different cohorts).
     """
     frames = []
     for eventtype, table in tables.items():
@@ -186,13 +214,16 @@ def compute_estimates(tables, by="none", date_col="night_date", drop_vals=("Unkn
 
         if by == "none":
             est["n_individuals"] = t["animal_id"].nunique()
-            est["n_nights"] = t[date_col].nunique()
+            est["n_clutch_nights"] = t[[date_col, group_col]].drop_duplicates().shape[0]
         else:
-            counts = t.groupby(by).agg(n_individuals=("animal_id", "nunique"),
-                                       n_nights=(date_col, "nunique")).reset_index()
+            cohort = list(zip(t[date_col], t[group_col]))
+            counts = (t.assign(_cohort=cohort).groupby(by)
+                       .agg(n_individuals=("animal_id", "nunique"),
+                           n_clutch_nights=("_cohort", "nunique"))
+                       .reset_index())
             counts["label"] = counts[by].astype(str)
-            est = est.drop(columns=[by]).merge(counts[["label", "n_individuals", "n_nights"]],
-                                               on="label", how="left")
+            est = est.drop(columns=[by]).merge(
+                counts[["label", "n_individuals", "n_clutch_nights"]], on="label", how="left")
         frames.append(est)
 
     if not frames:
@@ -203,14 +234,16 @@ def compute_estimates(tables, by="none", date_col="night_date", drop_vals=("Unkn
 # Plotting
 
 def _counts_text(est, label):
-    """ The plot headings show no. of individuals and no. of nights"""
+    """The plot headings show no. of individuals and no. of clutch-nights."""
     row = est[est["label"] == label]
     if row.empty:
         return ""
-    return f"n={int(row['n_individuals'].iloc[0])} individuals, {int(row['n_nights'].iloc[0])} nights"
+    return (f"n={int(row['n_individuals'].iloc[0])} individuals, "
+           f"{int(row['n_clutch_nights'].iloc[0])} clutch-nights")
 
 
 def _line(ax, sub, name, color, linestyle, alpha, y_scale="p"):
+    """Draws one p_estimate-vs-percentile_bin line with error bars onto `ax`."""
     sub = sub.sort_values("percentile_bin")
     y, yerr, ylabel = sub["p_estimate"], sub["p_error"], "p_estimate"
     if y_scale == "logit":
@@ -278,5 +311,51 @@ def plot_category_panels(est, axes=None, linestyle="-", alpha=1.0, suffix="", se
 
     if fig is not None:
         fig.tight_layout()
+    return fig, axes
+
+
+def plot_bulk_interval_duration(tables, group_col="clutch_id", date_col="night_date",
+                                max_interval_dur=durations.BULK_MAX_INTERVAL_DUR_SEC,
+                                bin_centers=range(100, 701, 100), bin_halfwidth=50):
+    """
+    interval_dur distribution (violin) across discretized time-of-night bins -- each bin
+    is bin_center +- bin_halfwidth minutes since that clutch-night's own first bulk event
+    (default: 100, 200, ... 700 +- 50 min). One panel per eventtype (sleep, wake).
+    `max_interval_dur` re-gates on top of durations.BULK_MAX_INTERVAL_DUR_SEC (already
+    applied when `tables` was built), so callers can tighten the cutoff for a plot without
+    touching durations.py. Takes already-built tables -- does not recompute them, so it's
+    cheap to call alongside other plots on the same tables.
+    """
+    sns.set_theme(style="whitegrid")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharex=True, sharey=True)
+    colors = dict(zip(EVENTTYPES, sns.color_palette(n_colors=len(EVENTTYPES))))
+    cohort = [date_col, group_col]
+
+    bin_centers = list(bin_centers)
+    edges = [c - bin_halfwidth for c in bin_centers] + [bin_centers[-1] + bin_halfwidth]
+
+    for ax, eventtype in zip(axes, EVENTTYPES):
+        table = tables.get(eventtype, pd.DataFrame())
+        if table.empty:
+            ax.set_title(f"{eventtype}\n(no data)")
+            continue
+
+        sub = table[table["interval_dur"] <= max_interval_dur].copy()
+        night_start = sub.groupby(cohort)["event_time"].transform("min")
+        sub["elapsed_min"] = (sub["event_time"] - night_start) / np.timedelta64(1, "m")
+        n_clutch_nights = sub[cohort].drop_duplicates().shape[0]
+
+        sub["time_bin"] = pd.cut(sub["elapsed_min"], bins=edges, labels=bin_centers)
+        sub = sub.dropna(subset=["time_bin"])
+
+        sns.violinplot(data=sub, x="time_bin", y="interval_dur", ax=ax,
+                       color=colors[eventtype], cut=0)
+
+        ax.set_title(f"{eventtype}\n{n_clutch_nights} clutch-nights", fontsize=9)
+        ax.set_xlabel(f"minutes since that clutch-night's first bulk event "
+                      f"(binned, +-{bin_halfwidth}min)")
+
+    axes[0].set_ylabel("interval_dur (s)")
+    fig.tight_layout()
     return fig, axes
 

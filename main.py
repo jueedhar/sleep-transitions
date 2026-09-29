@@ -9,6 +9,7 @@ import seaborn as sns
 import analyses
 import config
 import control_sims
+import durations
 import preprocessing
 import utilities
 
@@ -21,20 +22,25 @@ TEST_GROUP_ID = None
 CONTROL = True
 CONTROL_SEED = 42
 
-N_BOOT = 100 #no. of bootstrap resamples used to estimate the std error of each rate estimate
+N_BOOT = 20 #no. of bootstrap resamples used to estimate the std error of each rate estimate
 
 Y_SCALE = "p"  # "p" or "logit" -- applies to all p_estimate plots
 
 OVERALL = True
-BY_DIMENSIONS = ["age", "sex", "age_sex", "size_class", "coverage_class", "sleep_site_type", "wake_site_type", "night_third"]
+BY_DIMENSIONS = ["age", "sex", "age_sex", "size_class", "coverage_class", "sleep_site_type", "wake_site_type","night_third"]
+#
 
 RUN_EDGE = True
 RUN_BULK = True
+
+PLOT_INTERVAL_VS_NIGHT_TIME = True  # bulk-only, needs RUN_BULK
+MAX_INTERVAL_DUR = durations.BULK_MAX_INTERVAL_DUR_SEC  # tune here without touching durations.py
 
 YLIM =  None # set to (lo, hi) (-10,-6) (0, 0.002) or None to fix the y-axis across all plots
 
 
 def _draw(est, ctrl_est, plot_fn, name):
+    """Plots `est` via `plot_fn`, overlays `ctrl_est` dashed on the same axes, and saves."""
     fig, axes = plot_fn(est, y_scale=Y_SCALE)
     if ctrl_est is not None and not ctrl_est.empty:
         plot_fn(ctrl_est, axes=axes, linestyle="--", alpha=0.45,
@@ -46,9 +52,11 @@ def _draw(est, ctrl_est, plot_fn, name):
     plt.close(fig)
 
 
-def run(events_df, control_events, tag, output_dir):
-    # Built once per tag, then reused by every dimension below.
-    tables = analyses.build_duration_tables(events_df, kind=tag)
+def run(events_df, control_events, tag, output_dir, tables=None):
+    """Computes and saves rate estimates + plots for `tag` ("edge"/"bulk"), for every BY_DIMENSIONS split."""
+    # Built once per tag (or passed in already-built), then reused by every dimension below.
+    if tables is None:
+        tables = analyses.build_duration_tables(events_df, kind=tag)
     ctrl_tables = (analyses.build_duration_tables(control_events, kind=tag)
                    if control_events is not None else None)
 
@@ -103,10 +111,22 @@ if __name__ == "__main__":
         del control_events
 
     if RUN_BULK:
-        bulk_events = analyses.assign_night_third(
-            analyses.build_bulk_events(masterdf, edge_events))
-        control_events = control_sims.apply_date_map(bulk_events, date_map) if CONTROL else None
+        bulk_events_raw = analyses.build_bulk_events(masterdf, edge_events)
+        bulk_events = analyses.assign_night_third(bulk_events_raw)
+        bulk_tables = analyses.build_duration_tables(bulk_events, kind="bulk")
+
+        if PLOT_INTERVAL_VS_NIGHT_TIME:
+            fig, axes = analyses.plot_bulk_interval_duration(bulk_tables, max_interval_dur=MAX_INTERVAL_DUR)
+            utilities.saveimg(fig, "bulk_interval_duration_vs_night_time")
+            plt.close(fig)
+
+        # night_third must be assigned AFTER shuffling, not carried over from the real
+        # (night_date, clutch_id) grouping -- otherwise the control's night_third label
+        # still describes the real night it came from, not its shuffled cohort (debugged
+        # 29 Sept 2026: 9% of shuffled rows disagreed with a fresh post-shuffle label).
+        control_events = control_sims.apply_date_map(bulk_events_raw, date_map) if CONTROL else None
         if control_events is not None:
             control_events = control_sims.filter_min_clutch_size(
                 control_events, preprocessing.MIN_INDIVIDUALS_PER_CLUTCH)
-        run(bulk_events, control_events, "bulk", output_dir)
+            control_events = analyses.assign_night_third(control_events)
+        run(bulk_events, control_events, "bulk", output_dir, tables=bulk_tables)

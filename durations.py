@@ -17,6 +17,7 @@ import utilities
 
 EVENTTYPES = ("sleep", "wake")
 _COMPLEMENT = {"sleep": "wake", "wake": "sleep"}
+BULK_MAX_INTERVAL_DUR_SEC = 400  # drop bulk rows with an implausibly long gap since the prior wave
 
 def get_intervals(events: np.ndarray) -> np.ndarray:
     """
@@ -153,7 +154,7 @@ def get_transition_duration_tables_bulk(events_df, group_col="clutch_id", date_c
     (n_risk, aka M_r) is the live count of tracked animals in the
     complementary state, not a monotonically shrinking pool. Each animal
     starts being tracked at its own first event that night, seeded to that
-    event's complement state -- entry and exit are both just "the count":
+    event's complement state - entry and exit are both just "the count":
     an animal simply stops contributing once its own bulk stream (already
     restricted to BULK_EXCLUSION_WINDOW_MIN minutes from its own edges,
     upstream in analyses.split_edge_bulk_events) runs out, no separate
@@ -168,6 +169,7 @@ def get_transition_duration_tables_bulk(events_df, group_col="clutch_id", date_c
     Returns:
         {"sleep": table, "wake": table}. n_risk is stored under the column
         name n_left, for parity with get_transition_duration_table_edge.
+        Rows with interval_dur > BULK_MAX_INTERVAL_DUR_SEC are dropped.
     """
     df = events_df.dropna(subset=["event_time", date_col, group_col, "animal_id", "event_type"]).copy()
     if df.empty:
@@ -236,7 +238,10 @@ def get_transition_duration_tables_bulk(events_df, group_col="clutch_id", date_c
                 state[animal] = etype
                 occupancy[etype] += 1
 
-    return {eventtype: pd.DataFrame(rows[eventtype]).reset_index(drop=True) for eventtype in EVENTTYPES}
+    tables = {eventtype: pd.DataFrame(rows[eventtype]) for eventtype in EVENTTYPES}
+    return {eventtype: table[table["interval_dur"] <= BULK_MAX_INTERVAL_DUR_SEC].reset_index(drop=True)
+            if not table.empty else table
+            for eventtype, table in tables.items()}
 
 
 def get_transition_duration_table(df: pd.DataFrame, eventtype: str) -> pd.DataFrame:
@@ -305,13 +310,54 @@ def get_transition_duration_table(df: pd.DataFrame, eventtype: str) -> pd.DataFr
             transitioned_so_far += later_count
 
     return pd.DataFrame(rows)
-""" 
+
+'''
 if __name__ == "__main__":
-    focaldate = pd.to_datetime("2025-01-01").date()
-    masterdf = pd.read_parquet(config.MASTER_DATA_SHEET)
-    masterdf.dropna(inplace=True)
+    import matplotlib.pyplot as plt
+    import seaborn as sns
 
-    t_df = get_transition_duration_table(masterdf, "wake")
-    print(t_df)
-"""
+    import analyses
+    import preprocessing
 
+    FOCAL_GROUP = None              # None = first clutch_id in the data
+    FOCAL_DATE = None               # None = that clutch's earliest night_date
+
+    masterdf = preprocessing.load_regular_data()
+    FOCAL_GROUP = FOCAL_GROUP or masterdf["clutch_id"].iloc[0]
+    masterdf = masterdf[masterdf["clutch_id"] == FOCAL_GROUP]
+
+    edge_events = analyses.build_edge_events_from_masterdf(masterdf)
+    bulk_events = analyses.build_bulk_events(masterdf, edge_events)
+
+    edge_tables_all = {et: get_transition_duration_table_edge(edge_events, et) for et in EVENTTYPES}
+    bulk_tables_all = get_transition_duration_tables_bulk(bulk_events)
+
+    FOCAL_DATE = FOCAL_DATE or sorted(masterdf["night_date"].unique())[0]
+    tables = {
+        "edge": {et: t[t["night_date"] == FOCAL_DATE] for et, t in edge_tables_all.items()},
+        "bulk": {et: t[t["night_date"] == FOCAL_DATE] for et, t in bulk_tables_all.items()},
+    }
+    colors = {"edge_sleep": "#1b9e77", "edge_wake": "#d95f02",
+              "bulk_sleep": "#7570b3", "bulk_wake": "#e7298a"}
+
+    sns.set_theme(style="whitegrid")
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for model, model_tables in tables.items():
+        for eventtype, table in model_tables.items():
+            if table.empty:
+                continue
+            sub = table.sort_values("event_time")
+            ax.step(sub["event_time"], sub["n_left"], where="post", marker="o", markersize=4,
+                    label=f"{model}_{eventtype}", color=colors[f"{model}_{eventtype}"])
+            print(f"--- {model} {eventtype} ---")
+            print(sub[["event_time", "n_total", "n_left", "proportion_transitioned", "interval_dur"]]
+                  .to_string(index=False))
+
+    ax.set_xlabel("event_time")
+    ax.set_ylabel("n_left (at-risk pool)")
+    ax.set_title(f"{FOCAL_GROUP}, {FOCAL_DATE}: edge vs bulk at-risk pool")
+    ax.legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    plt.show()
+
+'''

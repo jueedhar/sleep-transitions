@@ -1,74 +1,45 @@
-# Transition Probability Estimation
+Sleep/wake transition-rate analysis for baboon clutches: real data vs.
+control_sims-shuffled null, for both edge (single onset/wake per animal per
+night) and bulk (repeated in-night transitions) events.
 
-This bit of code was written during a hackathon between 2026-03-23 and
-2026-03-27 (and a bit later) by Juee Dhar and Pranav Minasandra. The code deals
-with (a) pooling together existing data and metadata about baboon sleep, (b)
-estimating unbiased transition rates under the Markov assumption between sleep
-and wake states, and (c) runs simulations to prove that the debiasing works well.
+## Core pipeline (data-flow order)
 
-----------------------------------------------------------
+- **config.py** -- paths (`DATA`, `FIGURES`), percentile-bin thresholds, output formats.
+- **utilities.py** -- `saveimg` (writes a figure to every format in `config.formats`), `sprint`.
+- **populate_mastersheet.py** -- builds the master data sheet: animal-night sleep/wake
+  edge times merged with reference metadata, cluster-based sleep-site labels, and
+  group demographics (size/coverage class). Adds `clutch_size` and `wake_site_type`
+  (previous real night's `sleep_site_type`).
+- **preprocessing.py** -- `load_regular_data()`, the standard entry point for masterdf.
+  Filters to nights with both sleep and wake edge times, `disturbance_status == "regular"`
+  (TST above threshold), and `clutch_size >= MIN_INDIVIDUALS_PER_CLUTCH` counted *within*
+  that status.
+- **durations.py** -- the two at-risk models: `get_transition_duration_table_edge`
+  (one onset/wake per animal per night, monotonically shrinking pool) and
+  `get_transition_duration_tables_bulk` (repeated in-night transitions, live
+  non-monotonic occupancy pool; caps `interval_dur` at `BULK_MAX_INTERVAL_DUR_SEC`).
+- **estimation.py** -- fits the per-cell exponential rate, bootstraps its SE, corrects
+  for at-risk pool size, and aggregates across pool sizes into one `p_estimate` per
+  percentile bin.
+- **analyses.py** -- builds edge/bulk event streams from masterdf and the raw
+  per-animal inactivity parquets (`build_edge_events_from_masterdf`, `build_bulk_events`,
+  `split_edge_bulk_events` -- enforces the core-sleep window and per-animal edge
+  exclusion); wraps durations.py + estimation.py (`build_duration_tables`,
+  `compute_estimates`); all plotting (`plot_eventtype_panels`, `plot_category_panels`,
+  `plot_bulk_interval_duration`).
+- **control_sims.py** -- the real null: `make_date_map`/`apply_date_map` independently
+  permute each animal's own real `night_date`s (event_time shifted to match, so
+  time-of-night is preserved exactly); `filter_min_clutch_size` re-checks the size
+  floor after shuffling.
+- **main.py** -- the entry point. Loads data, builds edge/bulk events, runs both real
+  and control_sims-shuffled estimates across every `BY_DIMENSIONS` split (age, sex,
+  size_class, coverage_class, sleep/wake site type, night_third), saves parquets to
+  `Data/prop_outputs` and plots to `Figures`.
 
-## Setup
 
-1. Choose any folder as your 'PROJECTROOT', and note its path.
+## Testing utilities (synthetic data)
 
-2. Create the following subfolders:
+- **simulations.py** / **runsims.py** -- generate synthetic wake/sleep tables and run
+  them through the estimator, to test the estimation machinery independent of real data.
 
-    ```
-    PROJECTROOT
-    |
-    |--code/
-    |--Data/
-    |--Figures/
-    
-    ```
 
-    **Note**: folder names are case sensitive.
-
-3. In the `Data/` subfolder, accumulate the following files from the EAS data
-   server:
-
-   ```
-   baboon_sleep_wake_transitions.parquet        cluster_labels.csv           individual_night_locations.csv      metadata.csv      populate_mastersheet.py
-    Baboons-MBRP-Mpala-Kenya-reference-data.csv  combined_sleep_analysis.csv  individual_night_locations.parquet  metadata.parquet  GS_collars_demographics.csv 
-
-   ```
-   as well as the inactivity folder. 
-
-   (Juee is working on automating this. 4 months later - Juee has forgotten about this.)
-
-4. Moving to the 'PROJECTROOT' directory, run `git clone
-   https://github.com/jueedhar/sleep-transitions code/`
-
-5. Add a single file inside the `code/` folder called `.cw`. The contents of
-   this file should be the text path to the PROJECTROOT.
-
-6. Enter the code directory. To run analyses, enter the command
-
-    ```bash
-    python main.py
-    ```
-
-    And to run simulations, enter the command
-
-    ```bash
-    python runsims.py
-    ```
-
-    (depending on your setup, you might need to run `python3` instead of
-    `python`.
-
-7. Dependencies - pip install numpy pandas matplotlib seaborn tqdm
-
--------------------------------------------------------------------
-## Analyses
-
-The analyses splits the transition events into "edge_events" and "bulk_events", with edge_events corresponding with the onset and offset of the sleep period and bulk events are all events between these edge events, with a BULK_EXCLUSION_WINDOW_MIN buffer around the edge events. 
-
-## Unbiased relation estimation
-
-(coming soon)
-
-## Sleep transitions manuscript
-
-(coming soon)

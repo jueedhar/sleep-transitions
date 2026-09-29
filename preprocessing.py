@@ -19,11 +19,15 @@ TST_CSV_PATH = os.path.join(config.DATA, "combined_sleep_analysis.csv")
 def mask_and_filter(masterdf,
                                      tst_csv_path=TST_CSV_PATH,
                                      tst_threshold=TST_THRESHOLD,
-                                     min_individuals_per_clutch=MIN_INDIVIDUALS_PER_CLUTCH):
+                                     min_individuals_per_clutch=MIN_INDIVIDUALS_PER_CLUTCH,
+                                     status=LOAD_STATUS):
     """
-    Returns masterdf with the 'disturbance_status' column, filtered to only
-    the clutch-nights that pass the individual-count minimum and have both
-    a sleep and a wake edge time.
+    Returns masterdf filtered to `status` disturbance nights, further
+    restricted to clutch-nights that pass the individual-count minimum
+    (counted within `status` only -- not the raw clutch_size column, which
+    counts regular+disturbed together and can overstate a clutch-night's
+    regular-only size; debugged 24 Sept 2026) and have both a sleep and a
+    wake edge time.
     """
     masterdf = masterdf.rename(columns={"ind": "animal_id", "date": "night_date"})
 
@@ -47,13 +51,16 @@ def mask_and_filter(masterdf,
     masterdf["disturbance_status"] = "regular"
     masterdf.loc[masterdf["TST"] < tst_threshold, "disturbance_status"] = "disturbed"
     masterdf.loc[masterdf["TST"].isna(), "disturbance_status"] = pd.NA
-    
-    passes_clutch_minimum = masterdf["clutch_size"] >= min_individuals_per_clutch
+
+    masterdf = masterdf[masterdf["disturbance_status"] == status].reset_index(drop=True)
+
+    live_clutch_size = masterdf.groupby(["night_date", "clutch_id"])["animal_id"].transform("nunique")
+    passes_clutch_minimum = live_clutch_size >= min_individuals_per_clutch
 
     n_dropped = (~passes_clutch_minimum).sum()
     if n_dropped:
         print(f"mask_and_filter: dropping {n_dropped} row(s) from "
-              f"clutch-nights with fewer than {min_individuals_per_clutch} individuals")
+              f"clutch-nights with fewer than {min_individuals_per_clutch} '{status}' individuals")
 
     return masterdf[passes_clutch_minimum].reset_index(drop=True)
 
@@ -74,8 +81,8 @@ def load_regular_data(status=LOAD_STATUS,
         tst_csv_path=tst_csv_path,
         tst_threshold=tst_threshold,
         min_individuals_per_clutch=min_individuals_per_clutch,
+        status=status,
     )
-    masterdf = masterdf[masterdf["disturbance_status"] == status].reset_index(drop=True)
     print(f"load_regular_data: {masterdf['animal_id'].nunique()} animals, "
           f"{masterdf['night_date'].nunique()} nights, {len(masterdf)} animal-nights "
           f"remaining with status == '{status}'")

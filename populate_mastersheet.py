@@ -19,7 +19,7 @@ def generate_master_sheet():
     DATA_DIR = config.DATA
     sleep_df = pd.read_csv(
         os.path.join(DATA_DIR, 'combined_sleep_analysis.csv'),
-        usecols=['tag', 'night_date', 'onset', 'waking']
+        usecols=['tag', 'night_date', 'onset', 'waking'] #TST HERE
     )
 
 # Rename 'tag' to 'animal_id' for consistent merging
@@ -50,6 +50,16 @@ def generate_master_sheet():
         on='cluster_united',
         how='left'
     )
+
+    n_unlabeled_clusters = merged_df['sleep_site_type'].isna().sum()
+    if n_unlabeled_clusters:
+        missing_clusters = sorted(
+            merged_df.loc[merged_df['sleep_site_type'].isna(), 'cluster_united'].unique(),
+            key=str
+        )
+        print(f"generate_master_sheet: {n_unlabeled_clusters} row(s) have a cluster_united "
+              f"not found in cluster_labels.csv -- their sleep_site_type is NaN "
+              f"(missing clusters: {missing_clusters})")
 
     reference_df = pd.read_csv(
         os.path.join(DATA_DIR, 'Baboons-MBRP-Mpala-Kenya-reference-data.csv'),
@@ -91,8 +101,8 @@ def generate_master_sheet():
     final_df.t_wake = pd.to_datetime(final_df.t_wake)
 
     demographics_df = pd.read_csv(
-        os.path.join(DATA_DIR, 'GS_collars_demographics.csv'), #for group size S/M/L 
-        usecols=['group_id', 'size_class']
+        os.path.join(DATA_DIR, 'GS_collars_demographics.csv'), #for group size S/M/L and collar coverage class
+        usecols=['group_id', 'size_class', 'coverage_class']
     )
 
     final_df = final_df.merge(

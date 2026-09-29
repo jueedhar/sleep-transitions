@@ -239,6 +239,8 @@ def get_transition_duration_tables_bulk(events_df, group_col="clutch_id", date_c
                 occupancy[etype] += 1
 
     tables = {eventtype: pd.DataFrame(rows[eventtype]) for eventtype in EVENTTYPES}
+    print(tables)
+    quit()
     return {eventtype: table[table["interval_dur"] <= BULK_MAX_INTERVAL_DUR_SEC].reset_index(drop=True)
             if not table.empty else table
             for eventtype, table in tables.items()}
@@ -311,7 +313,6 @@ def get_transition_duration_table(df: pd.DataFrame, eventtype: str) -> pd.DataFr
 
     return pd.DataFrame(rows)
 
-'''
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -359,5 +360,3 @@ if __name__ == "__main__":
     ax.legend(fontsize=8, frameon=False)
     fig.tight_layout()
     plt.show()
-
-'''
